@@ -51,6 +51,12 @@ const App: React.FC = () => {
   const [selectedModel, setSelectedModel] = useState<ModelType>(savedState?.selectedModel || ModelType.FLASH_3);
   const [langFilter, setLangFilter] = useState<'zh' | 'en' | 'all'>(savedState?.langFilter || 'all');
   
+  // 主题切换
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    if (savedState?.theme) return savedState?.theme;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
+  
   // 性能优化选项
   const [enableBatchMode, setEnableBatchMode] = useState(false);
   const [concurrency, setConcurrency] = useState(2);
@@ -97,6 +103,8 @@ const App: React.FC = () => {
   const [isPaused, setIsPaused] = useState(false);
   const [processingSpeed, setProcessingSpeed] = useState<string>('-');
   const [estimatedTime, setEstimatedTime] = useState<string>('-');
+  const [estimatedCompletion, setEstimatedCompletion] = useState<string>('-');
+  const [lastNotifiedProgress, setLastNotifiedProgress] = useState<number>(0);
   
   // Token 统计
   const [tokenStats, setTokenStats] = useState({
@@ -260,6 +268,45 @@ const App: React.FC = () => {
     localStorage.setItem('nova_system_template', systemTemplate);
   }, [systemTemplate]);
 
+  // 应用主题
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+    localStorage.setItem('nova_theme', theme);
+  }, [theme]);
+
+  // 请求通知权限
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      // 不主动请求，等处理完成时再请求
+    }
+  }, []);
+
+  // 进度通知
+  const sendProgressNotification = (progress: number) => {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      const messages = [
+        { percent: 25, text: '📝 处理进度 25%，进展顺利！' },
+        { percent: 50, text: '⚡ 已完成一半，继续加油！' },
+        { percent: 75, text: '🚀 即将完成，请稍候...' },
+        { percent: 100, text: '✨ 文本重塑完成！' }
+      ];
+      
+      const message = messages.find(m => m.percent === progress);
+      if (message) {
+        new Notification('NovaStyle', {
+          body: message.text,
+          icon: '/logo.png',
+          tag: 'novastyle-progress',
+          requireInteraction: false
+        });
+      }
+    }
+  };
+
+  const sendCompletionNotification = () => {
+    sendProgressNotification(100);
+  };
+
   // 自动保存进度（每 5 秒）
   useEffect(() => {
     const timeoutId = setTimeout(() => {
@@ -268,7 +315,8 @@ const App: React.FC = () => {
         file, encoding, provider, selectedModel, selectedStyleId,
         selectedCustomModelId, progress: processing.progress,
         totalChunks: processing.totalChunks, viewMode, langFilter,
-        enableBatchMode, concurrency, enableStyleConsistency, chunkSize
+        enableBatchMode, concurrency, enableStyleConsistency, chunkSize,
+        theme
       };
       if (fullProcessedText.current.length < STORAGE_LIMIT) {
         stateToSave.fullContent = fullProcessedText.current;
@@ -276,7 +324,7 @@ const App: React.FC = () => {
       localStorage.setItem(APP_STATE_KEY, JSON.stringify(stateToSave));
     }, 5000);
     return () => clearTimeout(timeoutId);
-  }, [file, encoding, provider, selectedModel, selectedStyleId, selectedCustomModelId, processing.progress, processing.totalChunks, viewMode, langFilter, enableBatchMode, concurrency, enableStyleConsistency, chunkSize, fullProcessedText.current]);
+  }, [file, encoding, provider, selectedModel, selectedStyleId, selectedCustomModelId, processing.progress, processing.totalChunks, viewMode, langFilter, enableBatchMode, concurrency, enableStyleConsistency, chunkSize, fullProcessedText.current, theme]);
 
   // --- 管理功能函数 ---
   const addNewStyle = () => {
@@ -481,10 +529,27 @@ const App: React.FC = () => {
         const speed = (processedChunksRef.current / elapsed).toFixed(1);
         const remaining = chunks.length - i - 1;
         const eta = remaining / parseFloat(speed);
+        const currentProgress = Math.round(((i + 1) / chunks.length) * 100);
+        
+        // 计算预计完成时间
+        const completionDate = new Date(Date.now() + eta * 1000);
+        const completionTime = completionDate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
         
         setProcessingSpeed(`${speed} 块/秒`);
         setEstimatedTime(eta < 60 ? `${Math.round(eta)}秒` : `${Math.round(eta / 60)}分钟`);
-        setProcessing(p => ({ ...p, progress: Math.round(((i + 1) / chunks.length) * 100) }));
+        setEstimatedCompletion(completionTime);
+        setProcessing(p => ({ ...p, progress: currentProgress }));
+        
+        // 主动进度反馈（每 25% 通知一次）
+        if (currentProgress >= 25 && currentProgress >= lastNotifiedProgress + 25) {
+          sendProgressNotification(currentProgress);
+          setLastNotifiedProgress(currentProgress);
+          
+          // 请求通知权限（如果还未授权）
+          if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission();
+          }
+        }
       }
       
       const totalElapsed = ((Date.now() - startTimeRef.current) / 1000).toFixed(1);
@@ -497,6 +562,9 @@ const App: React.FC = () => {
       // 添加到历史记录（如果不是被停止的）
       if (!stopRequested.current) {
         addToHistory(parseFloat(totalElapsed));
+        
+        // 发送完成通知
+        sendCompletionNotification();
         
         // 批量处理：完成后自动处理下一个
         if (isBatchMode && currentBatchIndex < fileQueue.length - 1) {
@@ -842,28 +910,53 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          {/* 性能统计面板 */}
+          {/* 性能统计面板 + 进度反馈 */}
           {(processing.isProcessing || tokenStats.output > 0) && (
-            <div className="grid grid-cols-5 gap-4 shrink-0">
-              <div className="glass-panel rounded-xl p-3 border-white/5">
-                <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Gauge size={12} /> 处理速度</div>
-                <div className="text-lg font-bold text-cyan-400">{processingSpeed}</div>
-              </div>
-              <div className="glass-panel rounded-xl p-3 border-white/5">
-                <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Timer size={12} /> 预计剩余</div>
-                <div className="text-lg font-bold text-purple-400">{estimatedTime}</div>
-              </div>
-              <div className="glass-panel rounded-xl p-3 border-white/5">
-                <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Layers size={12} /> 进度</div>
-                <div className="text-lg font-bold text-blue-400">{processing.progress}%</div>
-              </div>
-              <div className="glass-panel rounded-xl p-3 border-white/5">
-                <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Type size={12} /> Token</div>
-                <div className="text-lg font-bold text-emerald-400">{(tokenStats.input + tokenStats.output).toLocaleString()}</div>
-              </div>
-              <div className="glass-panel rounded-xl p-3 border-white/5">
-                <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Cpu size={12} /> 费用</div>
-                <div className="text-lg font-bold text-amber-400">¥{tokenStats.estimatedCost.toFixed(4)}</div>
+            <div className="space-y-4 shrink-0">
+              {/* 进度条 */}
+              {processing.isProcessing && (
+                <div className="glass-panel rounded-xl p-4 border-white/5">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] text-slate-400 uppercase">处理进度</span>
+                    <span className="text-xs font-bold text-blue-400">{processing.progress}%</span>
+                  </div>
+                  <div className="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-300"
+                      style={{ width: `${processing.progress}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between mt-2 text-[9px] text-slate-500">
+                    <span>📊 已处理：{Math.round(processing.totalChunks * processing.progress / 100)} / {processing.totalChunks} 块</span>
+                    <span className={processing.progress === 100 ? 'text-green-400' : 'text-blue-400'}>
+                      {processing.progress === 100 ? '✅ 完成！' : '⏳ 处理中...'}
+                    </span>
+                  </div>
+                </div>
+              )}
+              
+              {/* 统计面板 */}
+              <div className="grid grid-cols-5 gap-4">
+                <div className="glass-panel rounded-xl p-3 border-white/5">
+                  <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Gauge size={12} /> 处理速度</div>
+                  <div className="text-lg font-bold text-cyan-400">{processingSpeed}</div>
+                </div>
+                <div className="glass-panel rounded-xl p-3 border-white/5">
+                  <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Timer size={12} /> 预计剩余</div>
+                  <div className="text-lg font-bold text-purple-400">{estimatedTime}</div>
+                </div>
+                <div className="glass-panel rounded-xl p-3 border-white/5">
+                  <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Timer size={12} /> 完成时间</div>
+                  <div className="text-lg font-bold text-pink-400">{estimatedCompletion}</div>
+                </div>
+                <div className="glass-panel rounded-xl p-3 border-white/5">
+                  <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Type size={12} /> Token</div>
+                  <div className="text-lg font-bold text-emerald-400">{(tokenStats.input + tokenStats.output).toLocaleString()}</div>
+                </div>
+                <div className="glass-panel rounded-xl p-3 border-white/5">
+                  <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Cpu size={12} /> 费用</div>
+                  <div className="text-lg font-bold text-amber-400">¥{tokenStats.estimatedCost.toFixed(4)}</div>
+                </div>
               </div>
             </div>
           )}
