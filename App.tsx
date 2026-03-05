@@ -124,6 +124,36 @@ const App: React.FC = () => {
   // 用于强制更新 UI（因为 fullProcessedText 是 Ref，不触发重绘）
   const [, forceUpdate] = useState({});
 
+  // --- 快捷键支持 ---
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+O: 打开文件
+      if (e.ctrlKey && e.key === 'o') {
+        e.preventDefault();
+        document.getElementById('file-upload')?.click();
+      }
+      // Ctrl+S: 导出
+      if (e.ctrlKey && e.key === 's') {
+        e.preventDefault();
+        if (fullProcessedText.current) handleSaveFile('txt');
+      }
+      // Ctrl+Enter: 开始处理
+      if (e.ctrlKey && e.key === 'Enter') {
+        e.preventDefault();
+        if (file && !processing.isProcessing) startProcessing();
+      }
+      // Escape: 停止处理
+      if (e.key === 'Escape') {
+        if (processing.isProcessing) {
+          stopRequested.current = true;
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [file, processing.isProcessing, fullProcessedText.current]);
+
   // --- 断点续传功能 ---
   const saveProgress = () => {
     if (file && processing.progress > 0) {
@@ -277,6 +307,21 @@ const App: React.FC = () => {
     forceUpdate({});
   };
 
+  // --- 拖拽上传处理 ---
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (file?.name.endsWith('.txt')) {
+      detectAndReadFile(file);
+    } else {
+      alert('请上传 .txt 格式的文件');
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+  };
+
   const startProcessing = async () => {
     if (!file || !selectedStyle) return;
     const isResuming = fullProcessedText.current.length > 0 && processing.progress > 0 && processing.progress < 100;
@@ -357,11 +402,23 @@ const App: React.FC = () => {
   };
 
   // --- 导出逻辑 ---
-  const handleSaveFile = async () => {
+  const handleSaveFile = async (format: 'txt' | 'md' = 'txt') => {
     if (!fullProcessedText.current) return;
     
-    const suggestedName = `${selectedStyle?.label || 'rewrite'}_${file?.name || 'file'}.txt`;
-    const blob = new Blob([fullProcessedText.current], { type: 'text/plain' });
+    let content = fullProcessedText.current;
+    let mimeType = 'text/plain';
+    let extension = 'txt';
+    
+    // 根据格式处理内容
+    if (format === 'md') {
+      mimeType = 'text/markdown';
+      extension = 'md';
+      // 添加 Markdown 格式
+      content = `# ${file?.name?.replace('.txt', '') || '重塑作品'} - ${selectedStyle?.label || '风格转换'}\n\n> 使用 NovaStyle v${'2.1'} 重塑 | 风格：${selectedStyle?.label || '未知'}\n\n---\n\n${fullProcessedText.current}`;
+    }
+    
+    const suggestedName = `${selectedStyle?.label || 'rewrite'}_${file?.name?.replace('.txt', '') || 'file'}.${extension}`;
+    const blob = new Blob([content], { type: mimeType });
 
     if ('showSaveFilePicker' in window) {
       try {
@@ -398,7 +455,16 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden text-slate-200">
+    <div 
+      className="flex flex-col h-screen overflow-hidden text-slate-200"
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+    >
+      {/* 拖拽提示 */}
+      <div className="absolute top-12 left-1/2 transform -translate-x-1/2 z-50 pointer-events-none opacity-0 hover:opacity-100 transition-opacity bg-blue-600/90 text-white px-6 py-3 rounded-xl text-sm font-bold shadow-2xl">
+        📁 释放以上传文件
+      </div>
+      
       <div className="h-10 glass-panel flex items-center justify-between px-4 border-b border-white/10 select-none shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 bg-blue-500 rounded-full shadow-[0_0_8px_rgba(59,130,246,0.6)]"></div>
@@ -602,13 +668,22 @@ const App: React.FC = () => {
             <div className="flex items-center gap-3">
               <button title="切换分屏" onClick={() => setViewMode(viewMode === 'split' ? 'single' : 'split')} className="p-2 text-slate-500 hover:text-white"><Columns size={20} /></button>
               <button title="清空内容" onClick={() => { if(confirm('确定要清空已生成的内容吗？')) { fullProcessedText.current = ""; setPreviewContent(""); forceUpdate({}); } }} className="p-2 text-slate-500 hover:text-red-400"><Trash2 size={20} /></button>
-              <button 
-                onClick={handleSaveFile} 
-                disabled={!fullProcessedText.current} 
-                className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${!fullProcessedText.current ? 'bg-slate-800 text-slate-600 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-500/20 active:scale-95'}`}
-              >
-                <Save size={18} /> 导出文件
-              </button>
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => handleSaveFile('txt')} 
+                  disabled={!fullProcessedText.current} 
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${!fullProcessedText.current ? 'bg-slate-800 text-slate-600 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-500/20 active:scale-95'}`}
+                >
+                  <Save size={18} /> TXT
+                </button>
+                <button 
+                  onClick={() => handleSaveFile('md')} 
+                  disabled={!fullProcessedText.current} 
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${!fullProcessedText.current ? 'bg-slate-800 text-slate-600 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/20 active:scale-95'}`}
+                >
+                  <FileText size={18} /> Markdown
+                </button>
+              </div>
             </div>
           </div>
 
