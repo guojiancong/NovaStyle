@@ -39,6 +39,11 @@ const App: React.FC = () => {
 
   const [file, setFile] = useState<FileMetadata | null>(savedProgress?.file || savedState?.file || null);
   const [rawFile, setRawFile] = useState<File | null>(null);
+  
+  // 批量处理
+  const [fileQueue, setFileQueue] = useState<File[]>([]);
+  const [isBatchMode, setIsBatchMode] = useState(false);
+  const [currentBatchIndex, setCurrentBatchIndex] = useState(0);
   const [encoding, setEncoding] = useState<string>(savedState?.encoding || 'UTF-8');
   const [isDetecting, setIsDetecting] = useState(false);
   const [viewMode, setViewMode] = useState<'split' | 'single'>(savedState?.viewMode || 'split');
@@ -153,6 +158,60 @@ const App: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [file, processing.isProcessing, fullProcessedText.current]);
+
+  // --- 处理历史记录功能 ---
+  interface ProcessingHistory {
+    id: string;
+    fileName: string;
+    style: string;
+    timestamp: number;
+    duration: number;
+    inputTokens: number;
+    outputTokens: number;
+    estimatedCost: number;
+    resultPreview: string;
+  }
+
+  const addToHistory = (duration: number) => {
+    if (!file || !selectedStyle) return;
+    
+    const historyItem: ProcessingHistory = {
+      id: `hist-${Date.now()}`,
+      fileName: file.name,
+      style: selectedStyle.label,
+      timestamp: Date.now(),
+      duration,
+      inputTokens: tokenStats.input,
+      outputTokens: tokenStats.output,
+      estimatedCost: tokenStats.estimatedCost,
+      resultPreview: fullProcessedText.current.slice(0, 200)
+    };
+    
+    const history = getHistory();
+    history.unshift(historyItem); // 添加到开头
+    if (history.length > 50) history.pop(); // 保留最近 50 条
+    localStorage.setItem('nova_history', JSON.stringify(history));
+    forceUpdate({});
+  };
+
+  const getHistory = (): ProcessingHistory[] => {
+    try {
+      const saved = localStorage.getItem('nova_history');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const clearHistory = () => {
+    localStorage.removeItem('nova_history');
+    forceUpdate({});
+  };
+
+  const loadFromHistory = (item: ProcessingHistory) => {
+    // 从历史记录恢复（简化版，实际需要存储完整内容）
+    alert('历史记录恢复功能开发中...');
+  };
 
   // --- 断点续传功能 ---
   const saveProgress = () => {
@@ -287,7 +346,7 @@ const App: React.FC = () => {
     if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
   };
 
-  const detectAndReadFile = async (blob: Blob) => {
+  const detectAndReadFile = async (blob: Blob, addToQueue: boolean = false) => {
     setIsDetecting(true);
     const buffer = await blob.arrayBuffer();
     let text = "";
@@ -298,7 +357,18 @@ const App: React.FC = () => {
       text = new TextDecoder('gbk').decode(buffer);
       setEncoding('GBK');
     }
-    setFile({ name: (blob as any).name || 'file.txt', size: blob.size, content: text });
+    
+    const fileMeta = { name: (blob as any).name || 'file.txt', size: blob.size, content: text };
+    
+    if (addToQueue || isBatchMode) {
+      // 添加到队列
+      const fileObj = new File([buffer], (blob as any).name, { type: 'text/plain' });
+      setFileQueue(prev => [...prev, fileObj]);
+      setFile(fileMeta);
+    } else {
+      setFile(fileMeta);
+    }
+    
     setLangFilter(text.match(/[\u4e00-\u9fa5]/g)?.length ? 'zh' : 'en');
     setIsDetecting(false);
     fullProcessedText.current = ""; 
@@ -307,14 +377,42 @@ const App: React.FC = () => {
     forceUpdate({});
   };
 
+  // 批量处理函数
+  const processNextInQueue = async () => {
+    if (currentBatchIndex >= fileQueue.length) {
+      alert('批量处理完成！');
+      setFileQueue([]);
+      setCurrentBatchIndex(0);
+      setIsBatchMode(false);
+      return;
+    }
+
+    const nextFile = fileQueue[currentBatchIndex];
+    await detectAndReadFile(nextFile, false);
+    
+    // 自动开始处理
+    setTimeout(() => {
+      startProcessing();
+    }, 1000);
+  };
+
   // --- 拖拽上传处理 ---
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
-    const file = e.dataTransfer.files[0];
-    if (file?.name.endsWith('.txt')) {
-      detectAndReadFile(file);
-    } else {
-      alert('请上传 .txt 格式的文件');
+    const files = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.txt'));
+    
+    if (files.length > 1) {
+      // 多文件 - 批量处理
+      if (confirm(`检测到 ${files.length} 个文件，是否启用批量处理模式？`)) {
+        setIsBatchMode(true);
+        setFileQueue(files);
+        detectAndReadFile(files[0], true);
+        return;
+      }
+    }
+    
+    if (files.length > 0) {
+      detectAndReadFile(files[0]);
     }
   };
 
@@ -395,6 +493,18 @@ const App: React.FC = () => {
         isProcessing: false, 
         currentChunk: stopRequested.current ? '任务已停止' : `重塑完成！总耗时：${totalElapsed}秒` 
       }));
+      
+      // 添加到历史记录（如果不是被停止的）
+      if (!stopRequested.current) {
+        addToHistory(parseFloat(totalElapsed));
+        
+        // 批量处理：完成后自动处理下一个
+        if (isBatchMode && currentBatchIndex < fileQueue.length - 1) {
+          setCurrentBatchIndex(prev => prev + 1);
+          setTimeout(() => processNextInQueue(), 2000);
+        }
+      }
+      
       forceUpdate({});
     } catch (e: any) {
       setProcessing(p => ({ ...p, isProcessing: false, error: e.message }));
@@ -479,7 +589,16 @@ const App: React.FC = () => {
             <h2 className="flex items-center gap-2 text-[10px] font-bold text-blue-400 mb-3 uppercase tracking-widest"><Upload size={14} /> 源文本载入</h2>
             <input type="file" accept=".txt" onChange={(e) => e.target.files?.[0] && detectAndReadFile(e.target.files[0])} className="hidden" id="file-upload" />
             <label htmlFor="file-upload" className={`flex flex-col items-center justify-center w-full h-16 border-2 border-dashed rounded-xl cursor-pointer transition-all ${file ? 'border-green-500/50 bg-green-500/5' : 'border-white/10 hover:border-blue-500/50 hover:bg-white/5'}`}>
-              {isDetecting ? <RefreshCw className="animate-spin text-blue-400" size={18} /> : file ? <div className="text-center p-2"><p className="text-[10px] text-slate-300 truncate w-40 mx-auto">{file.name}</p></div> : <p className="text-[10px] text-slate-400">点击上传 TXT</p>}
+              {isDetecting ? <RefreshCw className="animate-spin text-blue-400" size={18} /> : file ? (
+                <div className="text-center p-2">
+                  <p className="text-[10px] text-slate-300 truncate w-40 mx-auto">{file.name}</p>
+                  {isBatchMode && fileQueue.length > 1 && (
+                    <p className="text-[8px] text-blue-400 mt-1">批量模式：{currentBatchIndex + 1}/{fileQueue.length}</p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-[10px] text-slate-400">点击或拖拽上传 TXT</p>
+              )}
             </label>
           </section>
 
@@ -548,6 +667,42 @@ const App: React.FC = () => {
                   <label className="text-[10px] text-slate-300">并发数</label>
                   <input type="number" value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value))} className="w-20 bg-slate-900 border border-white/10 rounded px-2 py-1 text-[10px]" min="1" max="5" />
                 </div>
+              )}
+            </div>
+          </section>
+
+          {/* 历史记录 */}
+          <section>
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="flex items-center gap-2 text-[10px] font-bold text-pink-400 uppercase tracking-widest"><History size={14} /> 历史记录</h2>
+              <button 
+                title="清空历史" 
+                onClick={clearHistory}
+                className="p-1 hover:bg-white/10 rounded text-pink-400"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+            <div className="space-y-1 max-h-32 overflow-y-auto custom-scrollbar">
+              {getHistory().length === 0 ? (
+                <p className="text-[9px] text-slate-500 text-center py-2">暂无历史记录</p>
+              ) : (
+                getHistory().slice(0, 5).map(item => (
+                  <div 
+                    key={item.id}
+                    className="p-2 bg-white/5 rounded-lg border border-white/5 hover:border-pink-500/30 cursor-pointer transition-all"
+                    onClick={() => loadFromHistory(item)}
+                  >
+                    <div className="text-[9px] font-bold text-slate-300 truncate">{item.fileName}</div>
+                    <div className="text-[8px] text-slate-500 flex items-center justify-between mt-1">
+                      <span>{item.style}</span>
+                      <span>{(item.duration / 60).toFixed(1)}分钟</span>
+                    </div>
+                    <div className="text-[8px] text-slate-600 mt-1">
+                      {new Date(item.timestamp).toLocaleDateString('zh-CN')}
+                    </div>
+                  </div>
+                ))
               )}
             </div>
           </section>
