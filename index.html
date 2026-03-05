@@ -6,16 +6,33 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NovaStyle - 文学风格重塑器</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/animations.css">
     <style>
+        :root {
+            --bg-primary: #0f172a;
+            --text-primary: #f8fafc;
+        }
+        
+        html.light {
+            --bg-primary: #f8fafc;
+            --text-primary: #0f172a;
+        }
+        
         body {
-            background-color: #0f172a;
-            color: #f8fafc;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
             font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            transition: background-color 0.3s, color 0.3s;
         }
         .glass-panel {
             background: rgba(30, 41, 59, 0.7);
             backdrop-filter: blur(12px);
             border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        html.light .glass-panel {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(0, 0, 0, 0.1);
         }
         ::-webkit-scrollbar {
             width: 8px;

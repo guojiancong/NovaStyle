@@ -1,0 +1,138 @@
+/* NovaStyle v2.3 - 自定义动画 */
+
+/* 进度条渐变动画 */
+@keyframes progress-gradient {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.progress-bar-animated {
+  background: linear-gradient(
+    90deg,
+    #3b82f6,
+    #8b5cf6,
+    #3b82f6
+  );
+  background-size: 200% 200%;
+  animation: progress-gradient 2s ease infinite;
+}
+
+/* 脉冲动画 */
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.8);
+  }
+}
+
+.pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* 淡入动画 */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+/* 旋转加载 */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* 弹跳加载 */
+@keyframes bounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+.bounce {
+  animation: bounce 0.6s ease-in-out infinite;
+}
+
+/* 闪烁提示 */
+@keyframes flash {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.flash {
+  animation: flash 1s ease-in-out infinite;
+}
+
+/* 通知弹出动画 */
+@keyframes notification-pop {
+  0% {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.notification-pop {
+  animation: notification-pop 0.3s ease-out;
+}
+
+/* 状态指示器 */
+.status-indicator {
+  position: relative;
+}
+
+.status-indicator::after {
+  content: '';
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 10px;
+  height: 10px;
+  background: #10b981;
+  border-radius: 50%;
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.status-indicator.processing::after {
+  background: #3b82f6;
+}
+
+.status-indicator.error::after {
+  background: #ef4444;
+}
