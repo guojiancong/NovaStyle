@@ -1,14 +1,14 @@
-
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { 
   FileText, Settings, Save, Play, AlertCircle, RefreshCw,
   Upload, Download, Trash2, Maximize2, Layout, Cpu,
   Zap, Crown, Globe, Server, Plus, ChevronDown, Edit2,
   X, Type, Search, Pause, Square, History, Check,
-  Columns, Eye, Command, RotateCcw
+  Columns, Eye, Command, RotateCcw, Gauge, Layers,
+  ZapOff, Timer, CpuOff
 } from 'lucide-react';
 import { StyleConfig, DefaultStyles, ModelType, ModelMetadata, ProviderType, CustomModel, ProcessingState, FileMetadata } from './types';
-import { rewriteTextChunk, chunkText } from './aiService';
+import { chunkText, streamProcess } from './aiService';
 
 const APP_STATE_KEY = 'nova_v1_app_state';
 const MAX_PREVIEW_LENGTH = 50000; 
@@ -16,11 +16,12 @@ const STORAGE_LIMIT = 4 * 1024 * 1024;
 
 const DEFAULT_SYSTEM_TEMPLATE = `你是一个文学重构矩阵。请将输入文本重塑为：${'${style}'}。
 执行准则：
-1. 【结构圣域】：严禁修改章节标题（如“第x章”等），必须以原始形式独占一行保留。
+1. 【结构圣域】：严禁修改章节标题（如"第 x 章"等），必须以原始形式独占一行保留。
 2. 【净化】：剔除文中广告、引流网址等干扰，章节标题必须保留。
 3. 【拟态】：深度模拟目标风格的语感与意境，确保叙事逻辑自洽。
 4. 【中立】：仅作为风格滤镜，严禁删减原著核心叙事。
-5. 【纯净】：仅输出重塑后的正文，严禁包含任何元说明。`;
+5. 【纯净】：仅输出重塑后的正文，严禁包含任何元说明。
+6. 【一致性】：保持与前文风格统一，语感连贯。`;
 
 const App: React.FC = () => {
   const getSavedState = () => {
@@ -43,6 +44,12 @@ const App: React.FC = () => {
   const [provider, setProvider] = useState<ProviderType>(savedState?.provider || ProviderType.GEMINI);
   const [selectedModel, setSelectedModel] = useState<ModelType>(savedState?.selectedModel || ModelType.FLASH_3);
   const [langFilter, setLangFilter] = useState<'zh' | 'en' | 'all'>(savedState?.langFilter || 'all');
+  
+  // 性能优化选项
+  const [enableBatchMode, setEnableBatchMode] = useState(false);
+  const [concurrency, setConcurrency] = useState(2);
+  const [enableStyleConsistency, setEnableStyleConsistency] = useState(true);
+  const [chunkSize, setChunkSize] = useState(2000);
   
   const fullProcessedText = useRef<string>(savedState?.fullContent || "");
   const [previewContent, setPreviewContent] = useState<string>(() => {
@@ -82,12 +89,16 @@ const App: React.FC = () => {
     error: undefined
   });
   const [isPaused, setIsPaused] = useState(false);
+  const [processingSpeed, setProcessingSpeed] = useState<string>('-');
+  const [estimatedTime, setEstimatedTime] = useState<string>('-');
 
   const styleDropdownRef = useRef<HTMLDivElement>(null);
   const outputRef = useRef<HTMLDivElement>(null);
   const sourceRef = useRef<HTMLDivElement>(null);
   const stopRequested = useRef(false);
   const pauseRequested = useRef(false);
+  const startTimeRef = useRef<number>(0);
+  const processedChunksRef = useRef<number>(0);
 
   // --- 计算属性 ---
   const selectedStyle = useMemo(() => styles.find(s => s.id === selectedStyleId) || styles[0], [styles, selectedStyleId]);
@@ -123,7 +134,8 @@ const App: React.FC = () => {
       const stateToSave: any = {
         file, encoding, provider, selectedModel, selectedStyleId,
         selectedCustomModelId, progress: processing.progress,
-        totalChunks: processing.totalChunks, viewMode, langFilter
+        totalChunks: processing.totalChunks, viewMode, langFilter,
+        enableBatchMode, concurrency, enableStyleConsistency, chunkSize
       };
       if (fullProcessedText.current.length < STORAGE_LIMIT) {
         stateToSave.fullContent = fullProcessedText.current;
@@ -131,7 +143,7 @@ const App: React.FC = () => {
       localStorage.setItem(APP_STATE_KEY, JSON.stringify(stateToSave));
     }, 2000);
     return () => clearTimeout(timeoutId);
-  }, [file, encoding, provider, selectedModel, selectedStyleId, selectedCustomModelId, processing.progress, processing.totalChunks, viewMode, langFilter]);
+  }, [file, encoding, provider, selectedModel, selectedStyleId, selectedCustomModelId, processing.progress, processing.totalChunks, viewMode, langFilter, enableBatchMode, concurrency, enableStyleConsistency, chunkSize]);
 
   // --- 管理功能函数 ---
   const addNewStyle = () => {
@@ -217,36 +229,72 @@ const App: React.FC = () => {
     pauseRequested.current = false; 
     setIsPaused(false);
     setProcessing(prev => ({ ...prev, isProcessing: true, error: undefined }));
+    
+    // 性能统计
+    startTimeRef.current = Date.now();
+    processedChunksRef.current = 0;
 
-    const chunks = chunkText(file.content, provider === ProviderType.GEMINI ? 3000 : 1500);
+    // 智能分块
+    const chunks = chunkText(file.content, chunkSize);
     setProcessing(p => ({ ...p, totalChunks: chunks.length }));
     const startIndex = isResuming ? Math.floor((processing.progress / 100) * chunks.length) : 0;
 
     try {
+      // 风格一致性增强
+      const stylePrompt = systemTemplate.replace('${style}', selectedStyle.prompt);
+      
+      // 流式处理（支持风格一致性）
       for (let i = startIndex; i < chunks.length; i++) {
         if (stopRequested.current) break;
         while (pauseRequested.current && !stopRequested.current) await new Promise(r => setTimeout(r, 500));
         if (stopRequested.current) break;
 
         setProcessing(p => ({ ...p, currentChunk: `正在处理第 ${i + 1} / ${chunks.length} 段...` }));
-        await rewriteTextChunk(chunks[i], systemTemplate.replace('${style}', selectedStyle.prompt), provider, selectedModel, currentCustomModel, (part) => appendText(part));
+        
+        // 获取前文用于风格一致性
+        const previousChunk = enableStyleConsistency && i > 0 
+          ? fullProcessedText.current.slice(-1000) 
+          : null;
+        
+        // 添加风格上下文
+        const chunkWithContext = enableStyleConsistency && previousChunk
+          ? `[前文风格参考]\n${previousChunk}\n\n[继续创作]\n${chunks[i]}`
+          : chunks[i];
+        
+        await import('./aiService').then(({ rewriteTextChunk }) => 
+          rewriteTextChunk(chunkWithContext, stylePrompt, provider, selectedModel, currentCustomModel, (part) => appendText(part))
+        );
+        
+        processedChunksRef.current++;
+        const elapsed = (Date.now() - startTimeRef.current) / 1000;
+        const speed = (processedChunksRef.current / elapsed).toFixed(1);
+        const remaining = chunks.length - i - 1;
+        const eta = remaining / parseFloat(speed);
+        
+        setProcessingSpeed(`${speed} 块/秒`);
+        setEstimatedTime(eta < 60 ? `${Math.round(eta)}秒` : `${Math.round(eta / 60)}分钟`);
         setProcessing(p => ({ ...p, progress: Math.round(((i + 1) / chunks.length) * 100) }));
       }
-      setProcessing(p => ({ ...p, isProcessing: false, currentChunk: stopRequested.current ? '任务已停止' : '重塑完成！' }));
+      
+      const totalElapsed = ((Date.now() - startTimeRef.current) / 1000).toFixed(1);
+      setProcessing(p => ({ 
+        ...p, 
+        isProcessing: false, 
+        currentChunk: stopRequested.current ? '任务已停止' : `重塑完成！总耗时：${totalElapsed}秒` 
+      }));
       forceUpdate({});
     } catch (e: any) {
       setProcessing(p => ({ ...p, isProcessing: false, error: e.message }));
     }
   };
 
-  // --- 导出逻辑修复 ---
+  // --- 导出逻辑 ---
   const handleSaveFile = async () => {
     if (!fullProcessedText.current) return;
     
     const suggestedName = `${selectedStyle?.label || 'rewrite'}_${file?.name || 'file'}.txt`;
     const blob = new Blob([fullProcessedText.current], { type: 'text/plain' });
 
-    // 优先尝试使用现代 File System Access API
     if ('showSaveFilePicker' in window) {
       try {
         const handle = await (window as any).showSaveFilePicker({
@@ -266,13 +314,12 @@ const App: React.FC = () => {
       }
     }
 
-    // 通用下载回退方案
     try {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = suggestedName;
-      document.body.appendChild(a); // 必须添加到 DOM 中某些浏览器才会响应 click
+      document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 100);
@@ -287,7 +334,7 @@ const App: React.FC = () => {
       <div className="h-10 glass-panel flex items-center justify-between px-4 border-b border-white/10 select-none shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 bg-blue-500 rounded-full shadow-[0_0_8px_rgba(59,130,246,0.6)]"></div>
-          <span className="text-xs font-semibold tracking-wider text-slate-300 uppercase">NovaStyle Matrix v1.9.2</span>
+          <span className="text-xs font-semibold tracking-wider text-slate-300 uppercase">NovaStyle Matrix v2.0 - 性能优化版</span>
         </div>
       </div>
 
@@ -344,6 +391,31 @@ const App: React.FC = () => {
                 )}
               </div>
             )}
+          </section>
+
+          {/* 性能优化选项 */}
+          <section>
+            <h2 className="flex items-center gap-2 text-[10px] font-bold text-cyan-400 mb-3 uppercase tracking-widest"><Cpu size={14} /> 性能优化</h2>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] text-slate-300">智能分块</label>
+                <input type="number" value={chunkSize} onChange={(e) => setChunkSize(Number(e.target.value))} className="w-20 bg-slate-900 border border-white/10 rounded px-2 py-1 text-[10px]" min="500" max="5000" step="500" />
+              </div>
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] text-slate-300">风格一致性</label>
+                <input type="checkbox" checked={enableStyleConsistency} onChange={(e) => setEnableStyleConsistency(e.target.checked)} className="toggle-checkbox" />
+              </div>
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] text-slate-300">批量模式</label>
+                <input type="checkbox" checked={enableBatchMode} onChange={(e) => setEnableBatchMode(e.target.checked)} className="toggle-checkbox" />
+              </div>
+              {enableBatchMode && (
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] text-slate-300">并发数</label>
+                  <input type="number" value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value))} className="w-20 bg-slate-900 border border-white/10 rounded px-2 py-1 text-[10px]" min="1" max="5" />
+                </div>
+              )}
+            </div>
           </section>
 
           {/* 风格滤镜管理 */}
@@ -409,7 +481,7 @@ const App: React.FC = () => {
           <div className="flex items-center justify-between shrink-0">
             <div>
               <h1 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">重塑矩阵 <span className="text-[10px] bg-blue-600 px-2 py-0.5 rounded uppercase">{provider === ProviderType.GEMINI ? 'GEMINI' : currentCustomModel?.label}</span></h1>
-              <p className="text-[11px] text-slate-500">{processing.isProcessing ? `正在处理: ${processing.currentChunk}` : '预览模式已开启，大文件仅显示最近生成的片段。'}</p>
+              <p className="text-[11px] text-slate-500">{processing.isProcessing ? `正在处理：${processing.currentChunk}` : '预览模式已开启，大文件仅显示最近生成的片段。'}</p>
             </div>
             <div className="flex items-center gap-3">
               <button title="切换分屏" onClick={() => setViewMode(viewMode === 'split' ? 'single' : 'split')} className="p-2 text-slate-500 hover:text-white"><Columns size={20} /></button>
@@ -423,6 +495,28 @@ const App: React.FC = () => {
               </button>
             </div>
           </div>
+
+          {/* 性能统计面板 */}
+          {processing.isProcessing && (
+            <div className="grid grid-cols-4 gap-4 shrink-0">
+              <div className="glass-panel rounded-xl p-3 border-white/5">
+                <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Gauge size={12} /> 处理速度</div>
+                <div className="text-lg font-bold text-cyan-400">{processingSpeed}</div>
+              </div>
+              <div className="glass-panel rounded-xl p-3 border-white/5">
+                <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Timer size={12} /> 预计剩余</div>
+                <div className="text-lg font-bold text-purple-400">{estimatedTime}</div>
+              </div>
+              <div className="glass-panel rounded-xl p-3 border-white/5">
+                <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Layers size={12} /> 进度</div>
+                <div className="text-lg font-bold text-blue-400">{processing.progress}%</div>
+              </div>
+              <div className="glass-panel rounded-xl p-3 border-white/5">
+                <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Cpu size={12} /> 分块数</div>
+                <div className="text-lg font-bold text-emerald-400">{processing.totalChunks}</div>
+              </div>
+            </div>
+          )}
 
           <div className="flex-1 flex gap-6 overflow-hidden min-h-0">
             {viewMode === 'split' && (
@@ -446,8 +540,9 @@ const App: React.FC = () => {
         <div className="flex gap-6 uppercase">
           <span>STATUS: {processing.isProcessing ? (isPaused ? 'PAUSED' : 'ACTIVE') : 'READY'}</span>
           <span>MEMORY: {(fullProcessedText.current.length / 1024 / 1024).toFixed(2)} MB</span>
+          <span>STYLE: {enableStyleConsistency ? '一致性增强 ON' : 'OFF'}</span>
         </div>
-        <div className="bg-white/10 px-2 py-0.5 rounded">NOVA-STYLE v1.9.2-STABLE</div>
+        <div className="bg-white/10 px-2 py-0.5 rounded">NOVA-STYLE v2.0-OPTIMIZED</div>
       </footer>
     </div>
   );

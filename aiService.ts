@@ -1,4 +1,3 @@
-
 import { GoogleGenAI } from "@google/genai";
 import { ModelType, ProviderType, CustomModel } from "./types";
 
@@ -132,68 +131,267 @@ const handleOpenAICompatible = async (
     return fullText;
   } catch (error: any) {
     console.error("OpenAI Compatible Error:", error);
-    throw new Error(`自定义模型重塑失败: ${error.message}`);
+    throw new Error(`自定义模型重塑失败：${error.message}`);
   }
 };
 
 /**
- * Utility to split long text into context-aware chunks.
- * Enhanced to prioritize splitting at chapter boundaries.
+ * 智能检测章节边界
+ * 返回所有章节起始位置
+ */
+const detectChapterBoundaries = (text: string): number[] => {
+  const boundaries: number[] = [0];
+  
+  // 中文章节模式
+  const chineseChapterPattern = /(?:^|\n)\s*(第 [一二三四五六七八九十百千万零 0-9]+\s*[章节卷回]|楔子 | 序章 | 前言 | 引言 | 内容简介 | 目录 | 番外 | 后记 | 尾声)/gi;
+  // 英文章节模式
+  const englishChapterPattern = /(?:^|\n)\s*(Chapter\s*\d+|Prologue|Epilogue|Introduction|Preface|Contents|Appendix)/gi;
+  
+  let match;
+  while ((match = chineseChapterPattern.exec(text)) !== null) {
+    boundaries.push(match.index);
+  }
+  while ((match = englishChapterPattern.exec(text)) !== null) {
+    boundaries.push(match.index);
+  }
+  
+  return boundaries.sort((a, b) => a - b);
+};
+
+/**
+ * 改进的长文本分块策略
+ * 优先按章节分块，其次按语义边界分块
  */
 export const chunkText = (text: string, targetSize: number = 2000): string[] => {
   const chunks: string[] = [];
+  
+  // 1. 首先检测所有章节边界
+  const chapterBoundaries = detectChapterBoundaries(text);
+  
+  // 2. 如果章节数量合理（每章不超过 targetSize * 3），直接按章节分块
+  if (chapterBoundaries.length > 1) {
+    const chapterChunks: string[] = [];
+    for (let i = 0; i < chapterBoundaries.length; i++) {
+      const start = chapterBoundaries[i];
+      const end = i + 1 < chapterBoundaries.length ? chapterBoundaries[i + 1] : text.length;
+      const chapter = text.slice(start, end).trim();
+      
+      // 如果章节太大，需要进一步细分
+      if (chapter.length > targetSize * 1.5) {
+        const subChunks = splitLargeChapter(chapter, targetSize);
+        chapterChunks.push(...subChunks);
+      } else {
+        chapterChunks.push(chapter);
+      }
+    }
+    
+    // 如果分块数量合理，直接返回
+    if (chapterChunks.every(c => c.length <= targetSize * 1.2)) {
+      return chapterChunks;
+    }
+  }
+  
+  // 3. 回退到智能分块策略
+  return smartChunk(text, targetSize);
+};
+
+/**
+ * 细分大章节
+ */
+const splitLargeChapter = (chapter: string, targetSize: number): string[] => {
+  const chunks: string[] = [];
+  let remaining = chapter;
+  
+  while (remaining.length > targetSize) {
+    // 在章节内寻找最佳分割点
+    const splitPos = findBestSplitPoint(remaining, targetSize);
+    chunks.push(remaining.slice(0, splitPos).trimEnd());
+    remaining = remaining.slice(splitPos).trimStart();
+  }
+  
+  if (remaining.length > 0) {
+    chunks.push(remaining);
+  }
+  
+  return chunks;
+};
+
+/**
+ * 寻找最佳分割点
+ */
+const findBestSplitPoint = (text: string, targetSize: number): number => {
+  let splitPos = targetSize;
+  
+  // 1. 优先在段落边界分割
+  const dnlIndex = text.lastIndexOf('\n\n', targetSize);
+  if (dnlIndex > targetSize * 0.6) {
+    return dnlIndex + 2;
+  }
+  
+  // 2. 其次在句子边界分割
+  const sentencePattern = /[。！？.!?][\s\n]*/g;
+  let lastSentenceEnd = -1;
+  let match;
+  while ((match = sentencePattern.exec(text)) !== null) {
+    if (match.index < targetSize * 0.6) continue;
+    if (match.index > targetSize * 1.2) break;
+    lastSentenceEnd = match.index + match[0].length;
+  }
+  
+  if (lastSentenceEnd > 0) {
+    return lastSentenceEnd;
+  }
+  
+  // 3. 再次在单行边界分割
+  const newlineIndex = text.lastIndexOf('\n', splitPos);
+  if (newlineIndex > targetSize * 0.6) {
+    return newlineIndex + 1;
+  }
+  
+  // 4. 最后在标点处分割
+  const lastPunctuation = text.slice(0, targetSize).search(/[。！？.!?][^。！？.!?]*$/);
+  if (lastPunctuation > targetSize * 0.6) {
+    return lastPunctuation + 1;
+  }
+  
+  return splitPos;
+};
+
+/**
+ * 智能分块策略（回退方案）
+ */
+const smartChunk = (text: string, targetSize: number): string[] => {
+  const chunks: string[] = [];
   let remaining = text;
-
-  // Pattern for common chapter markers at the start of a line
-  const CHAPTER_PATTERN = /\n\s*(第[一二三四五六七八九十百千万零0-9]+\s*[章节卷回]|Chapter\s*\d+|楔子|内容简介|番外)/i;
-
+  
   while (remaining.length > 0) {
     if (remaining.length <= targetSize) {
       chunks.push(remaining);
       break;
     }
-
-    let splitPos = targetSize;
     
-    // 1. Try to split at a chapter marker within the 80% to 120% range of targetSize
-    const lookaheadArea = remaining.slice(targetSize * 0.5, targetSize * 1.5);
-    const chapterMatch = lookaheadArea.match(CHAPTER_PATTERN);
-    
-    if (chapterMatch && chapterMatch.index !== undefined) {
-      splitPos = (targetSize * 0.5) + chapterMatch.index;
-    } else {
-      // 2. Fallback: Try to split at double newline
-      const dnlIndex = remaining.lastIndexOf('\n\n', targetSize);
-      if (dnlIndex > targetSize * 0.5) {
-        splitPos = dnlIndex + 2;
-      } else {
-        // 3. Fallback: Single newline
-        const newlineIndex = remaining.lastIndexOf('\n', splitPos);
-        if (newlineIndex > targetSize * 0.6) {
-          splitPos = newlineIndex + 1;
-        } else {
-          // 4. Fallback: Punctuation
-          const lastPunctuation = remaining.slice(0, targetSize).search(/[。！？.!?][^。！？.!?]*$/);
-          if (lastPunctuation > targetSize * 0.6) {
-            splitPos = lastPunctuation + 1;
-          } else {
-            const lastComma = remaining.slice(0, targetSize).search(/[，；,;][^，；,;]*$/);
-            if (lastComma > targetSize * 0.6) {
-              splitPos = lastComma + 1;
-            } else {
-              const lastSpace = remaining.lastIndexOf(' ', splitPos);
-              if (lastSpace > targetSize * 0.6) {
-                splitPos = lastSpace + 1;
-              }
-            }
-          }
-        }
-      }
-    }
-
+    const splitPos = findBestSplitPoint(remaining, targetSize);
     chunks.push(remaining.slice(0, splitPos).trimEnd());
     remaining = remaining.slice(splitPos).trimStart();
   }
-
+  
   return chunks;
+};
+
+/**
+ * 批量并行处理（提升转换效率）
+ * 支持并发控制，避免 API 限流
+ */
+export const batchRewrite = async (
+  chunks: string[],
+  systemInstruction: string,
+  provider: ProviderType,
+  model: ModelType | string,
+  customConfig?: CustomModel,
+  concurrency: number = 3,
+  onProgress?: (completed: number, total: number, result: string) => void
+): Promise<string[]> => {
+  const results: string[] = new Array(chunks.length);
+  let completed = 0;
+  
+  // 使用信号量控制并发数
+  const semaphore = {
+    count: concurrency,
+    wait: async () => {
+      while (semaphore.count <= 0) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      semaphore.count--;
+    },
+    release: () => {
+      semaphore.count++;
+    }
+  };
+  
+  const processChunk = async (index: number) => {
+    await semaphore.wait();
+    try {
+      const result = await rewriteTextChunk(
+        chunks[index],
+        systemInstruction,
+        provider,
+        model,
+        customConfig
+      );
+      results[index] = result;
+      completed++;
+      if (onProgress) onProgress(completed, chunks.length, result);
+      return result;
+    } finally {
+      semaphore.release();
+    }
+  };
+  
+  // 并行处理所有分块
+  await Promise.all(chunks.map((_, i) => processChunk(i)));
+  
+  return results;
+};
+
+/**
+ * 风格一致性增强
+ * 添加上下文前缀，保持全文风格统一
+ */
+export const addStyleContext = (
+  chunk: string,
+  previousChunk: string | null,
+  stylePrompt: string
+): string => {
+  if (!previousChunk) {
+    return chunk;
+  }
+  
+  // 添加前文摘要作为上下文参考
+  const contextLength = Math.min(500, previousChunk.length);
+  const context = previousChunk.slice(-contextLength);
+  
+  return `[前文风格参考]\n${context}\n\n[继续创作]\n${chunk}`;
+};
+
+/**
+ * 优化后的流式处理
+ * 支持增量更新和断点续传
+ */
+export const streamProcess = async (
+  chunks: string[],
+  systemInstruction: string,
+  provider: ProviderType,
+  model: ModelType | string,
+  customConfig?: CustomModel,
+  onChunkComplete?: (index: number, result: string) => void,
+  signal?: AbortSignal
+): Promise<string> => {
+  const results: string[] = [];
+  let previousResult: string | null = null;
+  
+  for (let i = 0; i < chunks.length; i++) {
+    if (signal?.aborted) {
+      throw new Error('处理已取消');
+    }
+    
+    // 添加风格上下文，保持一致性
+    const chunkWithContext = addStyleContext(chunks[i], previousResult, systemInstruction);
+    
+    const result = await rewriteTextChunk(
+      chunkWithContext,
+      systemInstruction,
+      provider,
+      model,
+      customConfig
+    );
+    
+    results.push(result);
+    previousResult = result;
+    
+    if (onChunkComplete) {
+      onChunkComplete(i, result);
+    }
+  }
+  
+  return results.join('\n\n');
 };
