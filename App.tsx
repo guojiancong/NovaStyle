@@ -35,8 +35,9 @@ const App: React.FC = () => {
   };
 
   const savedState = getSavedState();
+  const savedProgress = loadProgress();
 
-  const [file, setFile] = useState<FileMetadata | null>(savedState?.file || null);
+  const [file, setFile] = useState<FileMetadata | null>(savedProgress?.file || savedState?.file || null);
   const [rawFile, setRawFile] = useState<File | null>(null);
   const [encoding, setEncoding] = useState<string>(savedState?.encoding || 'UTF-8');
   const [isDetecting, setIsDetecting] = useState(false);
@@ -91,6 +92,13 @@ const App: React.FC = () => {
   const [isPaused, setIsPaused] = useState(false);
   const [processingSpeed, setProcessingSpeed] = useState<string>('-');
   const [estimatedTime, setEstimatedTime] = useState<string>('-');
+  
+  // Token 统计
+  const [tokenStats, setTokenStats] = useState({
+    input: 0,
+    output: 0,
+    estimatedCost: 0
+  });
 
   const styleDropdownRef = useRef<HTMLDivElement>(null);
   const outputRef = useRef<HTMLDivElement>(null);
@@ -116,6 +124,40 @@ const App: React.FC = () => {
   // 用于强制更新 UI（因为 fullProcessedText 是 Ref，不触发重绘）
   const [, forceUpdate] = useState({});
 
+  // --- 断点续传功能 ---
+  const saveProgress = () => {
+    if (file && processing.progress > 0) {
+      const progress = {
+        fileName: file.name,
+        fileContent: file.content,
+        fullProcessedText: fullProcessedText.current,
+        progress: processing.progress,
+        totalChunks: processing.totalChunks,
+        timestamp: Date.now(),
+        selectedStyleId,
+        provider,
+        selectedModel
+      };
+      localStorage.setItem('nova_progress', JSON.stringify(progress));
+    }
+  };
+
+  const loadProgress = () => {
+    try {
+      const saved = localStorage.getItem('nova_progress');
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error("Failed to load progress", e);
+    }
+    return null;
+  };
+
+  const clearProgress = () => {
+    localStorage.removeItem('nova_progress');
+  };
+
   // --- 持久化逻辑 ---
   useEffect(() => {
     localStorage.setItem('nova_custom_styles', JSON.stringify(styles));
@@ -129,8 +171,10 @@ const App: React.FC = () => {
     localStorage.setItem('nova_system_template', systemTemplate);
   }, [systemTemplate]);
 
+  // 自动保存进度（每 5 秒）
   useEffect(() => {
     const timeoutId = setTimeout(() => {
+      saveProgress();
       const stateToSave: any = {
         file, encoding, provider, selectedModel, selectedStyleId,
         selectedCustomModelId, progress: processing.progress,
@@ -141,9 +185,9 @@ const App: React.FC = () => {
         stateToSave.fullContent = fullProcessedText.current;
       }
       localStorage.setItem(APP_STATE_KEY, JSON.stringify(stateToSave));
-    }, 2000);
+    }, 5000);
     return () => clearTimeout(timeoutId);
-  }, [file, encoding, provider, selectedModel, selectedStyleId, selectedCustomModelId, processing.progress, processing.totalChunks, viewMode, langFilter, enableBatchMode, concurrency, enableStyleConsistency, chunkSize]);
+  }, [file, encoding, provider, selectedModel, selectedStyleId, selectedCustomModelId, processing.progress, processing.totalChunks, viewMode, langFilter, enableBatchMode, concurrency, enableStyleConsistency, chunkSize, fullProcessedText.current]);
 
   // --- 管理功能函数 ---
   const addNewStyle = () => {
@@ -188,8 +232,24 @@ const App: React.FC = () => {
   };
 
   // --- 处理函数 ---
+  // Token 估算函数（中文约 1.5 字符/TOKEN，英文约 4 字符/TOKEN）
+  const estimateTokens = (text: string): number => {
+    const chineseChars = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
+    const otherChars = text.length - chineseChars;
+    return Math.round(chineseChars * 1.5 + otherChars * 0.25);
+  };
+
   const appendText = (chunk: string) => {
     fullProcessedText.current += chunk;
+    
+    // 更新 Token 统计
+    const outputTokens = estimateTokens(chunk);
+    setTokenStats(prev => ({
+      ...prev,
+      output: prev.output + outputTokens,
+      estimatedCost: (prev.output + outputTokens) * 0.002 / 1000 // 按 DeepSeek 价格估算
+    }));
+    
     setPreviewContent(prev => {
       const newContent = prev + chunk;
       return newContent.length > MAX_PREVIEW_LENGTH ? "..." + newContent.slice(-MAX_PREVIEW_LENGTH) : newContent;
@@ -233,6 +293,14 @@ const App: React.FC = () => {
     // 性能统计
     startTimeRef.current = Date.now();
     processedChunksRef.current = 0;
+    
+    // 重置 Token 统计
+    const inputTokens = estimateTokens(file.content);
+    setTokenStats({
+      input: inputTokens,
+      output: 0,
+      estimatedCost: 0
+    });
 
     // 智能分块
     const chunks = chunkText(file.content, chunkSize);
@@ -465,9 +533,57 @@ const App: React.FC = () => {
                <div className="text-[9px] text-amber-500 flex items-center gap-1 bg-amber-500/10 p-2 rounded-lg border border-amber-500/20"><AlertCircle size={12} /> 本地保存已禁用，请及时导出。</div>
              )}
             {!processing.isProcessing ? (
-              <button onClick={startProcessing} disabled={!file} className={`w-full py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${!file ? 'bg-slate-700 text-slate-500' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg'}`}>
-                <Play size={16} fill="currentColor" /> {processing.progress > 0 && processing.progress < 100 ? '继续重塑' : '开启重塑'}
-              </button>
+              <>
+                {savedProgress && savedProgress.progress > 0 && savedProgress.progress < 100 && (
+                  <div className="text-[9px] text-amber-400 bg-amber-500/10 p-2 rounded-lg border border-amber-500/20 mb-2">
+                    <AlertCircle size={12} className="inline mr-1" />
+                    发现未完成任务 ({savedProgress.progress}%)
+                    <button 
+                      onClick={() => {
+                        if (savedProgress) {
+                          fullProcessedText.current = savedProgress.fullProcessedText || "";
+                          setPreviewContent(savedProgress.fullProcessedText || "");
+                          setFile({
+                            name: savedProgress.fileName,
+                            size: savedProgress.fileContent?.length || 0,
+                            content: savedProgress.fileContent
+                          });
+                          setTokenStats({
+                            input: estimateTokens(savedProgress.fileContent || ""),
+                            output: estimateTokens(savedProgress.fullProcessedText || ""),
+                            estimatedCost: 0
+                          });
+                        }
+                      }}
+                      className="ml-2 text-amber-300 underline"
+                    >
+                      恢复进度
+                    </button>
+                    <button 
+                      onClick={clearProgress}
+                      className="ml-2 text-amber-500 underline"
+                    >
+                      清除
+                    </button>
+                  </div>
+                )}
+                <button onClick={() => {
+                  if (savedProgress && savedProgress.progress > 0) {
+                    if (confirm('发现未完成任务，是否恢复进度？')) {
+                      fullProcessedText.current = savedProgress.fullProcessedText || "";
+                      setPreviewContent(savedProgress.fullProcessedText || "");
+                      setFile({
+                        name: savedProgress.fileName,
+                        size: savedProgress.fileContent?.length || 0,
+                        content: savedProgress.fileContent
+                      });
+                    }
+                  }
+                  startProcessing();
+                }} disabled={!file} className={`w-full py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${!file ? 'bg-slate-700 text-slate-500' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg'}`}>
+                  <Play size={16} fill="currentColor" /> {processing.progress > 0 && processing.progress < 100 ? '继续重塑' : '开启重塑'}
+                </button>
+              </>
             ) : (
               <div className="grid grid-cols-2 gap-2">
                 <button onClick={() => { pauseRequested.current = !pauseRequested.current; setIsPaused(pauseRequested.current); }} className="py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 bg-slate-700 text-white">{isPaused ? <Play size={16} fill="currentColor" /> : <Pause size={16} fill="currentColor" />} {isPaused ? '继续' : '暂停'}</button>
@@ -497,8 +613,8 @@ const App: React.FC = () => {
           </div>
 
           {/* 性能统计面板 */}
-          {processing.isProcessing && (
-            <div className="grid grid-cols-4 gap-4 shrink-0">
+          {(processing.isProcessing || tokenStats.output > 0) && (
+            <div className="grid grid-cols-5 gap-4 shrink-0">
               <div className="glass-panel rounded-xl p-3 border-white/5">
                 <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Gauge size={12} /> 处理速度</div>
                 <div className="text-lg font-bold text-cyan-400">{processingSpeed}</div>
@@ -512,8 +628,12 @@ const App: React.FC = () => {
                 <div className="text-lg font-bold text-blue-400">{processing.progress}%</div>
               </div>
               <div className="glass-panel rounded-xl p-3 border-white/5">
-                <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Cpu size={12} /> 分块数</div>
-                <div className="text-lg font-bold text-emerald-400">{processing.totalChunks}</div>
+                <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Type size={12} /> Token</div>
+                <div className="text-lg font-bold text-emerald-400">{(tokenStats.input + tokenStats.output).toLocaleString()}</div>
+              </div>
+              <div className="glass-panel rounded-xl p-3 border-white/5">
+                <div className="flex items-center gap-2 text-[9px] text-slate-500 uppercase"><Cpu size={12} /> 费用</div>
+                <div className="text-lg font-bold text-amber-400">¥{tokenStats.estimatedCost.toFixed(4)}</div>
               </div>
             </div>
           )}
