@@ -5,10 +5,11 @@ import {
   Zap, Crown, Globe, Server, Plus, ChevronDown, Edit2,
   X, Type, Search, Pause, Square, History, Check,
   Columns, Eye, Command, RotateCcw, Gauge, Layers,
-  ZapOff, Timer, CpuOff
+  ZapOff, Timer, CpuOff, Cloud, Share2
 } from 'lucide-react';
 import { StyleConfig, DefaultStyles, ModelType, ModelMetadata, ProviderType, CustomModel, ProcessingState, FileMetadata } from './types';
 import { chunkText, streamProcess } from './aiService';
+import StyleMarket from './StyleMarket';
 
 const APP_STATE_KEY = 'nova_v1_app_state';
 const MAX_PREVIEW_LENGTH = 50000; 
@@ -78,6 +79,7 @@ const App: React.FC = () => {
   const [editingStyleId, setEditingStyleId] = useState<string | null>(null);
   const [styleSearch, setStyleSearch] = useState('');
   const [isStyleDropdownOpen, setIsStyleDropdownOpen] = useState(false);
+  const [isMarketOpen, setIsMarketOpen] = useState(false);
 
   // --- 模型管理状态 ---
   const [customModels, setCustomModels] = useState<CustomModel[]>(() => {
@@ -334,6 +336,70 @@ const App: React.FC = () => {
     setSelectedStyleId(newId);
     setEditingStyleId(newId);
     setIsStyleDropdownOpen(false);
+  };
+
+  const handleImportStyle = (style: StyleConfig) => {
+    setStyles([...styles, style]);
+    setSelectedStyleId(style.id);
+    setIsMarketOpen(false);
+    // 显示成功提示
+    alert(`✅ 风格 "${style.label}" 已成功导入！`);
+  };
+
+  const handleExportStyles = () => {
+    const exportData = {
+      name: 'NovaStyle 风格包',
+      version: '1.0',
+      exportedAt: new Date().toISOString(),
+      styles: styles.filter(s => !DefaultStyles.find(ds => ds.id === s.id)) // 只导出自定义风格
+    };
+    
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `novastyle_styles_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportStylesFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target?.result as string);
+        if (data.styles && Array.isArray(data.styles)) {
+          const importedStyles = data.styles.map((s: any) => ({
+            id: `imported-${s.id}-${Date.now()}`,
+            label: s.label,
+            prompt: s.prompt,
+            language: s.language || 'all' as const
+          }));
+          setStyles([...styles, ...importedStyles]);
+          alert(`✅ 成功导入 ${importedStyles.length} 个风格！`);
+        } else if (data.label && data.prompt) {
+          // 单个风格
+          const newStyle: StyleConfig = {
+            id: `imported-${Date.now()}`,
+            label: data.label,
+            prompt: data.prompt,
+            language: data.language || 'all' as const
+          };
+          setStyles([...styles, newStyle]);
+          alert(`✅ 成功导入风格 "${data.label}"！`);
+        } else {
+          throw new Error('Invalid format');
+        }
+      } catch (err) {
+        alert('❌ 导入失败：文件格式不正确');
+      }
+    };
+    reader.readAsText(file);
   };
 
   const updateStyle = (id: string, updates: Partial<StyleConfig>) => {
@@ -779,7 +845,15 @@ const App: React.FC = () => {
           <section className="flex flex-col gap-2 relative">
             <div className="flex items-center justify-between">
               <h2 className="flex items-center gap-2 text-[10px] font-bold text-purple-400 uppercase tracking-widest"><Settings size={14} /> 风格滤镜</h2>
-              <button title="添加风格" onClick={addNewStyle} className="p-1 hover:bg-white/10 rounded text-purple-400"><Plus size={14} /></button>
+              <div className="flex gap-1">
+                <button title="风格市场" onClick={() => setIsMarketOpen(true)} className="p-1 hover:bg-white/10 rounded text-purple-400"><Cloud size={14} /></button>
+                <button title="导出风格" onClick={handleExportStyles} className="p-1 hover:bg-white/10 rounded text-purple-400"><Share2 size={14} /></button>
+                <label title="导入风格" className="p-1 hover:bg-white/10 rounded text-purple-400 cursor-pointer">
+                  <Upload size={14} />
+                  <input type="file" accept=".json" onChange={handleImportStylesFile} className="hidden" />
+                </label>
+                <button title="添加风格" onClick={addNewStyle} className="p-1 hover:bg-white/10 rounded text-purple-400"><Plus size={14} /></button>
+              </div>
             </div>
             <div className="flex gap-1 bg-white/5 p-1 rounded-lg border border-white/5">
               {['all', 'zh', 'en'].map(l => (
@@ -987,6 +1061,14 @@ const App: React.FC = () => {
         </div>
         <div className="bg-white/10 px-2 py-0.5 rounded">NOVA-STYLE v2.0-OPTIMIZED</div>
       </footer>
+
+      {/* 风格市场弹窗 */}
+      {isMarketOpen && (
+        <StyleMarket
+          onImportStyle={handleImportStyle}
+          onClose={() => setIsMarketOpen(false)}
+        />
+      )}
     </div>
   );
 };
