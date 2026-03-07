@@ -293,7 +293,7 @@ export const batchRewrite = async (
 ): Promise<string[]> => {
   const results: string[] = new Array(chunks.length);
   let completed = 0;
-  
+
   // 使用信号量控制并发数
   const semaphore = {
     count: concurrency,
@@ -307,7 +307,7 @@ export const batchRewrite = async (
       semaphore.count++;
     }
   };
-  
+
   const processChunk = async (index: number) => {
     await semaphore.wait();
     try {
@@ -326,11 +326,90 @@ export const batchRewrite = async (
       semaphore.release();
     }
   };
-  
+
   // 并行处理所有分块
   await Promise.all(chunks.map((_, i) => processChunk(i)));
-  
+
   return results;
+};
+
+/**
+ * 依赖组并行处理（确保风格一致性）
+ * 将分块分为多个组，组内并行，组间串行（依赖前一组结果）
+ */
+export const processChunksWithDependencies = async (
+  chunks: string[],
+  systemInstruction: string,
+  provider: ProviderType,
+  model: ModelType | string,
+  customConfig?: CustomModel,
+  concurrency: number = 3,
+  enableStyleConsistency: boolean = false,
+  onProgress?: (completed: number, total: number, chunkIndex: number, result: string) => void
+): Promise<string[]> => {
+  const allResults: string[] = new Array(chunks.length);
+  let totalCompleted = 0;
+  const totalChunks = chunks.length;
+
+  // 创建依赖组：每个组的大小等于并发数，最后一个组可能较小
+  const groups: number[][] = [];
+  for (let i = 0; i < chunks.length; i += concurrency) {
+    const groupSize = Math.min(concurrency, chunks.length - i);
+    const group = Array.from({ length: groupSize }, (_, j) => i + j);
+    groups.push(group);
+  }
+
+  // 按顺序处理每个组（组间串行）
+  for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+    const group = groups[groupIndex];
+
+    // 获取前文上下文（用于风格一致性）
+    let previousContext: string | null = null;
+    if (enableStyleConsistency && groupIndex > 0) {
+      // 获取前面已处理的所有结果，提取最后1500字符作为上下文
+      const previousResults: string[] = [];
+      for (let i = 0; i < group[0]; i++) {
+        if (allResults[i]) {
+          previousResults.push(allResults[i]);
+        }
+      }
+      previousContext = previousResults.slice(-3).join('\n\n').slice(-1500);
+    }
+
+    // 准备本组需要处理的chunks（带上下文）
+    const chunksWithContext = group.map((index) => {
+      const chunk = chunks[index];
+      if (enableStyleConsistency && previousContext && index > 0) {
+        return `[前文风格参考]\n${previousContext}\n\n[继续创作]\n${chunk}`;
+      }
+      return chunk;
+    });
+
+    // 并行处理本组内的chunks（组内并行）
+    await Promise.all(
+      group.map(async (chunkIndexInGroup, i) => {
+        const actualIndex = group[i];
+        const result = await rewriteTextChunk(
+          chunksWithContext[i],
+          systemInstruction,
+          provider,
+          model,
+          customConfig
+        );
+
+        // 立即存储结果并回调
+        allResults[actualIndex] = result;
+        totalCompleted++;
+
+        // 每个chunk完成后立即回调
+        if (onProgress) {
+          onProgress(totalCompleted, totalChunks, actualIndex, result);
+        }
+      })
+    );
+  }
+
+  return allResults;
 };
 
 /**

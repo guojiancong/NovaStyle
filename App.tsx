@@ -8,7 +8,7 @@ import {
   ZapOff, Timer, CpuOff, Cloud, Share2
 } from 'lucide-react';
 import { StyleConfig, DefaultStyles, ModelType, ModelMetadata, ProviderType, CustomModel, ProcessingState, FileMetadata } from './types';
-import { chunkText, streamProcess } from './aiService';
+import { chunkText, streamProcess, processChunksWithDependencies, rewriteTextChunk } from './aiService';
 import StyleMarket from './StyleMarket';
 
 const APP_STATE_KEY = 'nova_v1_app_state';
@@ -538,20 +538,20 @@ const App: React.FC = () => {
   const startProcessing = async () => {
     if (!file || !selectedStyle) return;
     const isResuming = fullProcessedText.current.length > 0 && processing.progress > 0 && processing.progress < 100;
-    if (!isResuming) { 
-      fullProcessedText.current = ""; 
-      setPreviewContent(""); 
+    if (!isResuming) {
+      fullProcessedText.current = "";
+      setPreviewContent("");
     }
 
-    stopRequested.current = false; 
-    pauseRequested.current = false; 
+    stopRequested.current = false;
+    pauseRequested.current = false;
     setIsPaused(false);
     setProcessing(prev => ({ ...prev, isProcessing: true, error: undefined }));
-    
+
     // 性能统计
     startTimeRef.current = Date.now();
     processedChunksRef.current = 0;
-    
+
     // 重置 Token 统计
     const inputTokens = estimateTokens(file.content);
     setTokenStats({
@@ -563,58 +563,138 @@ const App: React.FC = () => {
     // 智能分块
     const chunks = chunkText(file.content, chunkSize);
     setProcessing(p => ({ ...p, totalChunks: chunks.length }));
-    const startIndex = isResuming ? Math.floor((processing.progress / 100) * chunks.length) : 0;
 
     try {
       // 风格一致性增强
       const stylePrompt = systemTemplate.replace('${style}', selectedStyle.prompt);
-      
-      // 流式处理（支持风格一致性）
-      for (let i = startIndex; i < chunks.length; i++) {
-        if (stopRequested.current) break;
-        while (pauseRequested.current && !stopRequested.current) await new Promise(r => setTimeout(r, 500));
-        if (stopRequested.current) break;
 
-        setProcessing(p => ({ ...p, currentChunk: `正在处理第 ${i + 1} / ${chunks.length} 段...` }));
-        
-        // 获取前文用于风格一致性
-        const previousChunk = enableStyleConsistency && i > 0 
-          ? fullProcessedText.current.slice(-1000) 
-          : null;
-        
-        // 添加风格上下文
-        const chunkWithContext = enableStyleConsistency && previousChunk
-          ? `[前文风格参考]\n${previousChunk}\n\n[继续创作]\n${chunks[i]}`
-          : chunks[i];
-        
-        await import('./aiService').then(({ rewriteTextChunk }) => 
-          rewriteTextChunk(chunkWithContext, stylePrompt, provider, selectedModel, currentCustomModel, (part) => appendText(part))
+      // 根据批量模式选择处理方式
+      if (enableBatchMode && concurrency > 1 && chunks.length > 1) {
+        // 批量并行模式（依赖组处理）
+        const resultsMap = new Map<number, string>();
+
+        const results = await processChunksWithDependencies(
+          chunks,
+          stylePrompt,
+          provider,
+          selectedModel,
+          currentCustomModel,
+          concurrency,
+          enableStyleConsistency,
+          (completed, total, chunkIndex, result) => {
+            // 存储结果到 Map
+            resultsMap.set(chunkIndex, result);
+
+            // 按索引顺序拼接已完成的chunk
+            const sortedResults = Array.from(resultsMap.entries())
+              .sort((a, b) => a[0] - b[0])
+              .map(entry => entry[1]);
+            const previewText = sortedResults.join('\n\n');
+
+            fullProcessedText.current = previewText;
+
+            // 更新进度
+            const currentProgress = Math.round((completed / total) * 100);
+            const elapsed = (Date.now() - startTimeRef.current) / 1000;
+            const speed = (completed / elapsed).toFixed(1);
+            const remaining = total - completed;
+            const eta = remaining / parseFloat(speed);
+
+            // 计算预计完成时间
+            const completionDate = new Date(Date.now() + eta * 1000);
+            const completionTime = completionDate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+            setProcessing(p => ({
+              ...p,
+              progress: currentProgress,
+              currentChunk: `并行处理中：${completed}/${total} 段...`
+            }));
+            setProcessingSpeed(`${speed} 块/秒`);
+            setEstimatedTime(eta < 60 ? `${Math.round(eta)}秒` : `${Math.round(eta / 60)}分钟`);
+            setEstimatedCompletion(completionTime);
+
+            // 更新 Token 统计
+            const outputTokens = estimateTokens(previewText);
+            setTokenStats(prev => ({
+              ...prev,
+              output: outputTokens,
+              estimatedCost: outputTokens * 0.002 / 1000
+            }));
+
+            // 更新预览内容（考虑长度限制）
+            setPreviewContent(
+              previewText.length > MAX_PREVIEW_LENGTH
+                ? "..." + previewText.slice(-MAX_PREVIEW_LENGTH)
+                : previewText
+            );
+
+            // 自动滚动到底部
+            if (outputRef.current) {
+              outputRef.current.scrollTop = outputRef.current.scrollHeight;
+            }
+
+            // 主动进度反馈（每 25% 通知一次）
+            if (currentProgress >= 25 && currentProgress >= lastNotifiedProgress + 25) {
+              sendProgressNotification(currentProgress);
+              setLastNotifiedProgress(currentProgress);
+
+              // 请求通知权限（如果还未授权）
+              if ('Notification' in window && Notification.permission === 'default') {
+                Notification.requestPermission();
+              }
+            }
+          }
         );
-        
-        processedChunksRef.current++;
-        const elapsed = (Date.now() - startTimeRef.current) / 1000;
-        const speed = (processedChunksRef.current / elapsed).toFixed(1);
-        const remaining = chunks.length - i - 1;
-        const eta = remaining / parseFloat(speed);
-        const currentProgress = Math.round(((i + 1) / chunks.length) * 100);
-        
-        // 计算预计完成时间
-        const completionDate = new Date(Date.now() + eta * 1000);
-        const completionTime = completionDate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-        
-        setProcessingSpeed(`${speed} 块/秒`);
-        setEstimatedTime(eta < 60 ? `${Math.round(eta)}秒` : `${Math.round(eta / 60)}分钟`);
-        setEstimatedCompletion(completionTime);
-        setProcessing(p => ({ ...p, progress: currentProgress }));
-        
-        // 主动进度反馈（每 25% 通知一次）
-        if (currentProgress >= 25 && currentProgress >= lastNotifiedProgress + 25) {
-          sendProgressNotification(currentProgress);
-          setLastNotifiedProgress(currentProgress);
-          
-          // 请求通知权限（如果还未授权）
-          if ('Notification' in window && Notification.permission === 'default') {
-            Notification.requestPermission();
+
+        processedChunksRef.current = chunks.length;
+      } else {
+        // 顺序处理模式（支持暂停/恢复）
+        const startIndex = isResuming ? Math.floor((processing.progress / 100) * chunks.length) : 0;
+
+        for (let i = startIndex; i < chunks.length; i++) {
+          if (stopRequested.current) break;
+          while (pauseRequested.current && !stopRequested.current) await new Promise(r => setTimeout(r, 500));
+          if (stopRequested.current) break;
+
+          setProcessing(p => ({ ...p, currentChunk: `正在处理第 ${i + 1} / ${chunks.length} 段...` }));
+
+          // 获取前文用于风格一致性
+          const previousChunk = enableStyleConsistency && i > 0
+            ? fullProcessedText.current.slice(-1000)
+            : null;
+
+          // 添加风格上下文
+          const chunkWithContext = enableStyleConsistency && previousChunk
+            ? `[前文风格参考]\n${previousChunk}\n\n[继续创作]\n${chunks[i]}`
+            : chunks[i];
+
+          const result = await rewriteTextChunk(chunkWithContext, stylePrompt, provider, selectedModel, currentCustomModel, (part) => appendText(part));
+
+          processedChunksRef.current++;
+          const elapsed = (Date.now() - startTimeRef.current) / 1000;
+          const speed = (processedChunksRef.current / elapsed).toFixed(1);
+          const remaining = chunks.length - i - 1;
+          const eta = remaining / parseFloat(speed);
+          const currentProgress = Math.round(((i + 1) / chunks.length) * 100);
+
+          // 计算预计完成时间
+          const completionDate = new Date(Date.now() + eta * 1000);
+          const completionTime = completionDate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+          setProcessingSpeed(`${speed} 块/秒`);
+          setEstimatedTime(eta < 60 ? `${Math.round(eta)}秒` : `${Math.round(eta / 60)}分钟`);
+          setEstimatedCompletion(completionTime);
+          setProcessing(p => ({ ...p, progress: currentProgress }));
+
+          // 主动进度反馈（每 25% 通知一次）
+          if (currentProgress >= 25 && currentProgress >= lastNotifiedProgress + 25) {
+            sendProgressNotification(currentProgress);
+            setLastNotifiedProgress(currentProgress);
+
+            // 请求通知权限（如果还未授权）
+            if ('Notification' in window && Notification.permission === 'default') {
+              Notification.requestPermission();
+            }
           }
         }
       }
@@ -713,7 +793,7 @@ const App: React.FC = () => {
       <div className="h-10 glass-panel flex items-center justify-between px-4 border-b border-white/10 select-none shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 bg-blue-500 rounded-full shadow-[0_0_8px_rgba(59,130,246,0.6)]"></div>
-          <span className="text-xs font-semibold tracking-wider text-slate-300 uppercase">NovaStyle Matrix v2.3 - 性能优化版</span>
+          <span className="text-xs font-semibold tracking-wider text-slate-300 uppercase">NovaStyle Matrix v2.4 - 并行批量版</span>
         </div>
       </div>
 
@@ -1060,7 +1140,7 @@ const App: React.FC = () => {
           <span>MEMORY: {(fullProcessedText.current.length / 1024 / 1024).toFixed(2)} MB</span>
           <span>STYLE: {enableStyleConsistency ? '一致性增强 ON' : 'OFF'}</span>
         </div>
-        <div className="bg-white/10 px-2 py-0.5 rounded">NOVA-STYLE v2.3-OPTIMIZED</div>
+        <div className="bg-white/10 px-2 py-0.5 rounded">NOVA-STYLE v2.4-PARALLEL</div>
       </footer>
 
       {/* 风格市场弹窗 */}
