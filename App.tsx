@@ -55,7 +55,8 @@ const App: React.FC = () => {
   const savedState = getSavedState();
   const savedProgress = loadProgress();
 
-  const [file, setFile] = useState<FileMetadata | null>(savedProgress?.file || savedState?.file || null);
+  // 不自动加载文件内容，需要用户确认
+  const [file, setFile] = useState<FileMetadata | null>(null);
   const [rawFile, setRawFile] = useState<File | null>(null);
   
   // 批量处理
@@ -80,12 +81,9 @@ const App: React.FC = () => {
   const [concurrency, setConcurrency] = useState(2);
   const [enableStyleConsistency, setEnableStyleConsistency] = useState(true);
   const [chunkSize, setChunkSize] = useState(2000);
-  
-  const fullProcessedText = useRef<string>(savedState?.fullContent || "");
-  const [previewContent, setPreviewContent] = useState<string>(() => {
-    const text = savedState?.fullContent || "";
-    return text.length > MAX_PREVIEW_LENGTH ? "..." + text.slice(-MAX_PREVIEW_LENGTH) : text;
-  });
+
+  const fullProcessedText = useRef<string>("");
+  const [previewContent, setPreviewContent] = useState<string>("");
 
   // --- 风格管理状态 ---
   const [styles, setStyles] = useState<StyleConfig[]>(() => {
@@ -132,6 +130,10 @@ const App: React.FC = () => {
     estimatedCost: 0
   });
 
+  // 恢复状态管理
+  const [hasUnrestoredContent, setHasUnrestoredContent] = useState<boolean>(!!(savedProgress?.file || savedState?.file || savedState?.fullContent));
+  const [showRestoreDialog, setShowRestoreDialog] = useState<boolean>(false);
+
   const styleDropdownRef = useRef<HTMLDivElement>(null);
   const outputRef = useRef<HTMLDivElement>(null);
   const sourceRef = useRef<HTMLDivElement>(null);
@@ -142,11 +144,33 @@ const App: React.FC = () => {
 
   // --- 计算属性 ---
   const selectedStyle = useMemo(() => styles.find(s => s.id === selectedStyleId) || styles[0], [styles, selectedStyleId]);
-  const filteredStyles = useMemo(() => styles.filter(s => {
-    const matchesSearch = s.label.toLowerCase().includes(styleSearch.toLowerCase());
-    const matchesLang = langFilter === 'all' || s.language === 'all' || s.language === langFilter;
-    return matchesSearch && matchesLang;
-  }), [styles, styleSearch, langFilter]);
+  const filteredStyles = useMemo(() => {
+    let result = styles;
+
+    // 搜索过滤
+    if (styleSearch.trim()) {
+      result = result.filter(s =>
+        s.label.toLowerCase().includes(styleSearch.toLowerCase()) ||
+        s.prompt.toLowerCase().includes(styleSearch.toLowerCase())
+      );
+    }
+
+    // 语言过滤（但确保至少显示一些风格）
+    if (langFilter !== 'all') {
+      const languageMatched = result.filter(s =>
+        s.language === 'all' || s.language === langFilter
+      );
+
+      // 如果语言过滤后结果为空，显示所有风格但标记不匹配的
+      if (languageMatched.length === 0) {
+        // 保持所有结果，但可能显示警告
+      } else {
+        result = languageMatched;
+      }
+    }
+
+    return result;
+  }, [styles, styleSearch, langFilter]);
   const currentCustomModel = useMemo(() => customModels.find(m => m.id === selectedCustomModelId) || customModels[0], [customModels, selectedCustomModelId]);
   const sourcePreview = useMemo(() => {
     if (!file?.content) return "";
@@ -280,6 +304,40 @@ const App: React.FC = () => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
     localStorage.setItem('nova_theme', theme);
   }, [theme]);
+
+  // 检测是否有未恢复的内容
+  useEffect(() => {
+    if (hasUnrestoredContent && !showRestoreDialog) {
+      // 延迟显示对话框，避免在应用加载时立即弹出
+      const timer = setTimeout(() => {
+        setShowRestoreDialog(true);
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [hasUnrestoredContent, showRestoreDialog]);
+
+  // 恢复文件和处理内容
+  const handleRestoreContent = () => {
+    if (savedProgress?.file || savedState?.file) {
+      setFile(savedProgress?.file || savedState?.file);
+    }
+    if (savedState?.fullContent) {
+      const text = savedState.fullContent;
+      fullProcessedText.current = text;
+      setPreviewContent(text.length > MAX_PREVIEW_LENGTH ? "..." + text.slice(-MAX_PREVIEW_LENGTH) : text);
+    }
+    setHasUnrestoredContent(false);
+    setShowRestoreDialog(false);
+  };
+
+  // 清除保存的内容
+  const handleClearContent = () => {
+    localStorage.removeItem('nova_progress');
+    localStorage.removeItem(APP_STATE_KEY);
+    setHasUnrestoredContent(false);
+    setShowRestoreDialog(false);
+  };
+
 
   // 请求通知权限
   useEffect(() => {
@@ -784,11 +842,44 @@ const App: React.FC = () => {
   };
 
   return (
-    <div 
+    <div
       className="flex flex-col h-screen overflow-hidden text-slate-200"
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >
+      {/* 恢复内容对话框 */}
+      {showRestoreDialog && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="glass-panel rounded-2xl p-6 max-w-md w-full shadow-2xl border border-white/10">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-blue-500/20 rounded-xl flex items-center justify-center">
+                <History className="w-5 h-5 text-blue-400" />
+              </div>
+              <h3 className="text-lg font-bold text-white">恢复上次的工作内容？</h3>
+            </div>
+
+            <p className="text-slate-300 text-sm mb-6 leading-relaxed">
+              检测到您上次有未完成的工作内容。是否要恢复这些内容？
+            </p>
+
+            <div className="flex gap-3">
+              <button
+                onClick={handleClearContent}
+                className="flex-1 px-4 py-3 bg-slate-700/50 hover:bg-slate-700/70 text-slate-200 rounded-xl transition-all font-medium text-sm border border-white/5"
+              >
+                清除内容
+              </button>
+              <button
+                onClick={handleRestoreContent}
+                className="flex-1 px-4 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-all font-medium text-sm shadow-lg shadow-blue-500/25"
+              >
+                恢复内容
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 拖拽提示 */}
       <div className="absolute top-12 left-1/2 transform -translate-x-1/2 z-50 pointer-events-none opacity-0 hover:opacity-100 transition-opacity bg-blue-600/90 text-white px-6 py-3 rounded-xl text-sm font-bold shadow-2xl">
         📁 释放以上传文件
@@ -940,10 +1031,18 @@ const App: React.FC = () => {
                 <button title="添加风格" onClick={addNewStyle} className="p-1 hover:bg-white/10 rounded text-purple-400"><Plus size={14} /></button>
               </div>
             </div>
-            <div className="flex gap-1 bg-white/5 p-1 rounded-lg border border-white/5">
-              {['all', 'zh', 'en'].map(l => (
-                <button key={l} onClick={() => setLangFilter(l as any)} className={`flex-1 py-1 text-[9px] font-bold rounded-md transition-all ${langFilter === l ? 'bg-purple-600/30 text-purple-200' : 'text-slate-500'}`}>{l.toUpperCase()}</button>
-              ))}
+            <div className="flex items-center gap-2">
+              <span className="text-[8px] text-slate-500 font-medium">语言:</span>
+              <div className="flex gap-1 flex-1 bg-white/5 p-1 rounded-lg border border-white/5">
+                <button key="all" onClick={() => setLangFilter('all')} className={`flex-1 py-1 text-[9px] font-bold rounded-md transition-all ${langFilter === 'all' ? 'bg-purple-600/30 text-purple-200' : 'text-slate-500 hover:text-slate-400'}`}>全部</button>
+                <button key="zh" onClick={() => setLangFilter('zh')} className={`flex-1 py-1 text-[9px] font-bold rounded-md transition-all ${langFilter === 'zh' ? 'bg-purple-600/30 text-purple-200' : 'text-slate-500 hover:text-slate-400'}`}>中文</button>
+                <button key="en" onClick={() => setLangFilter('en')} className={`flex-1 py-1 text-[9px] font-bold rounded-md transition-all ${langFilter === 'en' ? 'bg-purple-600/30 text-purple-200' : 'text-slate-500 hover:text-slate-400'}`}>英文</button>
+              </div>
+              {(styleSearch || langFilter !== 'all') && (
+                <button onClick={() => { setStyleSearch(''); setLangFilter('all'); }} className="p-1 hover:bg-white/10 rounded text-slate-400 hover:text-white" title="重置筛选">
+                  <RotateCcw size={12} />
+                </button>
+              )}
             </div>
             <div className="relative" ref={styleDropdownRef}>
               <button onClick={() => setIsStyleDropdownOpen(!isStyleDropdownOpen)} className="w-full flex items-center justify-between px-3 py-2 bg-slate-900 border border-white/10 rounded-xl text-[11px] text-slate-200">
@@ -952,7 +1051,35 @@ const App: React.FC = () => {
               </button>
               {isStyleDropdownOpen && (
                 <div className="absolute top-full left-0 w-full mt-2 bg-slate-950 border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 origin-top">
-                  <div className="p-2 border-b border-white/5"><input placeholder="搜索风格..." value={styleSearch} onChange={e => setStyleSearch(e.target.value)} className="w-full bg-white/5 border border-white/5 rounded-lg px-2 py-1.5 text-[10px]" /></div>
+                  <div className="p-2 border-b border-white/5 relative">
+                    <input
+                      placeholder="搜索风格名称或描述..."
+                      value={styleSearch}
+                      onChange={e => setStyleSearch(e.target.value)}
+                      className="w-full bg-white/5 border border-white/5 rounded-lg px-3 py-2 text-[10px] pr-8"
+                    />
+                    {styleSearch && (
+                      <button
+                        onClick={() => setStyleSearch('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+                  <div className="px-3 py-1.5 border-b border-white/5 bg-white/5 flex items-center justify-between">
+                    <span className="text-[8px] text-slate-500">
+                      显示 {filteredStyles.length} / {styles.length} 个风格
+                    </span>
+                    {(styleSearch || langFilter !== 'all') && (
+                      <button
+                        onClick={() => { setStyleSearch(''); setLangFilter('all'); }}
+                        className="text-[8px] text-blue-400 hover:text-blue-300 flex items-center gap-1"
+                      >
+                        <RotateCcw size={10} /> 重置筛选
+                      </button>
+                    )}
+                  </div>
                   <div className="max-h-60 overflow-y-auto custom-scrollbar">
                     {filteredStyles.map(s => (
                       <div key={s.id} className="group flex items-center hover:bg-white/5">
