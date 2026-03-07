@@ -1,7 +1,7 @@
 {
   "name": "novastyle---文学风格重塑器",
   "private": true,
-  "version": "0.0.0",
+  "version": "2.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -26,7 +26,7 @@ const MARKET_STYLES: MarketStyle[] = [
   {
     id: 'market-jin-yong',
     label: '金庸武侠',
-    prompt: '金庸武侠风格：半文半白的雅致叙事，用词考究，富有古典文学底蕴。注重武学招式的意境描写，强调"侠之大者，为国为民"的豪情与复杂的江湖恩怨。',
+    prompt: '金庸武侠风格：半文半白，用词考究，注重武学意境。',
     language: 'zh',
     author: 'NovaStyle 官方',
     downloads: 15234,
@@ -39,7 +39,7 @@ const MARKET_STYLES: MarketStyle[] = [
   {
     id: 'market-gu-long',
     label: '古龙浪子',
-    prompt: '古龙风格：句式极短，节奏感极强。强调意境而非具体的动作过程，多用简短有力的对话推动剧情。文字中充满浪子情怀、美酒、快刀以及寂寞的诗意。',
+    prompt: '古龙风格：句式极短，节奏感强，多用对话推动剧情。',
     language: 'zh',
     author: 'NovaStyle 官方',
     downloads: 12456,
