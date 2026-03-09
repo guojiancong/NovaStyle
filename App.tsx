@@ -259,6 +259,20 @@ const App: React.FC = () => {
     forceUpdate({});
   };
 
+  const resetAllSettings = () => {
+    if (confirm('确定要重置所有设置吗？这将清除所有保存的数据，包括风格配置、模型设置、历史记录等。')) {
+      localStorage.clear();
+      alert('所有设置已重置，页面将重新加载。');
+      location.reload();
+    }
+  };
+
+  const resetFilters = () => {
+    setStyleSearch('');
+    setLangFilter('all');
+    alert('筛选条件已重置，所有风格应该可见了。');
+  };
+
   const loadFromHistory = (item: ProcessingHistory) => {
     // 从历史记录恢复（简化版，实际需要存储完整内容）
     alert('历史记录恢复功能开发中...');
@@ -633,7 +647,7 @@ const App: React.FC = () => {
       // 根据批量模式选择处理方式
       if (enableBatchMode && concurrency > 1 && chunks.length > 1) {
         // 批量并行模式（依赖组处理）
-        const resultsMap = new Map<number, string>();
+        const tempResults: Map<number, string> = new Map();
 
         const results = await processChunksWithDependencies(
           chunks,
@@ -644,18 +658,10 @@ const App: React.FC = () => {
           concurrency,
           enableStyleConsistency,
           (completed, total, chunkIndex, result) => {
-            // 存储结果到 Map
-            resultsMap.set(chunkIndex, result);
+            // 临时存储已完成的结果用于预览
+            tempResults.set(chunkIndex, result);
 
-            // 按索引顺序拼接已完成的chunk
-            const sortedResults = Array.from(resultsMap.entries())
-              .sort((a, b) => a[0] - b[0])
-              .map(entry => entry[1]);
-            const previewText = sortedResults.join('\n\n');
-
-            fullProcessedText.current = previewText;
-
-            // 更新进度
+            // 更新进度统计
             const currentProgress = Math.round((completed / total) * 100);
             const elapsed = (Date.now() - startTimeRef.current) / 1000;
             const speed = (completed / elapsed).toFixed(1);
@@ -675,15 +681,20 @@ const App: React.FC = () => {
             setEstimatedTime(eta < 60 ? `${Math.round(eta)}秒` : `${Math.round(eta / 60)}分钟`);
             setEstimatedCompletion(completionTime);
 
-            // 更新 Token 统计
-            const outputTokens = estimateTokens(previewText);
+            // 更新 Token 统计（只计算新增的部分）
+            const newTokens = estimateTokens(result);
             setTokenStats(prev => ({
               ...prev,
-              output: outputTokens,
-              estimatedCost: outputTokens * 0.002 / 1000
+              output: prev.output + newTokens,
+              estimatedCost: (prev.output + newTokens) * 0.002 / 1000
             }));
 
-            // 更新预览内容（考虑长度限制）
+            // 更新预览显示（按已完成的chunk顺序）
+            const sortedTempResults = Array.from(tempResults.entries())
+              .sort((a, b) => a[0] - b[0])
+              .map(entry => entry[1]);
+            const previewText = sortedTempResults.join('\n\n');
+
             setPreviewContent(
               previewText.length > MAX_PREVIEW_LENGTH
                 ? "..." + previewText.slice(-MAX_PREVIEW_LENGTH)
@@ -708,6 +719,9 @@ const App: React.FC = () => {
           }
         );
 
+        // 批量并行处理完成后，使用返回的正确排序的结果
+        // results数组已经按正确顺序排列，直接使用
+        fullProcessedText.current = results.join('\n\n');
         processedChunksRef.current = chunks.length;
       } else {
         // 顺序处理模式（支持暂停/恢复）
@@ -985,13 +999,22 @@ const App: React.FC = () => {
           <section>
             <div className="flex items-center justify-between mb-2">
               <h2 className="flex items-center gap-2 text-[10px] font-bold text-pink-400 uppercase tracking-widest"><History size={14} /> 历史记录</h2>
-              <button 
-                title="清空历史" 
-                onClick={clearHistory}
-                className="p-1 hover:bg-white/10 rounded text-pink-400"
-              >
-                <Trash2 size={14} />
-              </button>
+              <div className="flex gap-1">
+                <button
+                  title="重置所有设置"
+                  onClick={resetAllSettings}
+                  className="p-1 hover:bg-white/10 rounded text-red-400"
+                >
+                  <RotateCcw size={14} />
+                </button>
+                <button
+                  title="清空历史"
+                  onClick={clearHistory}
+                  className="p-1 hover:bg-white/10 rounded text-pink-400"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             </div>
             <div className="space-y-1 max-h-32 overflow-y-auto custom-scrollbar">
               {getHistory().length === 0 ? (
@@ -1070,10 +1093,15 @@ const App: React.FC = () => {
                   <div className="px-3 py-1.5 border-b border-white/5 bg-white/5 flex items-center justify-between">
                     <span className="text-[8px] text-slate-500">
                       显示 {filteredStyles.length} / {styles.length} 个风格
+                      {filteredStyles.length < styles.length && (
+                        <span className="text-amber-500 ml-1">
+                          ({styles.length - filteredStyles.length}个被筛选)
+                        </span>
+                      )}
                     </span>
                     {(styleSearch || langFilter !== 'all') && (
                       <button
-                        onClick={() => { setStyleSearch(''); setLangFilter('all'); }}
+                        onClick={resetFilters}
                         className="text-[8px] text-blue-400 hover:text-blue-300 flex items-center gap-1"
                       >
                         <RotateCcw size={10} /> 重置筛选

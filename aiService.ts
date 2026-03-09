@@ -377,9 +377,10 @@ export const processChunksWithDependencies = async (
     }
 
     // 准备本组需要处理的chunks（带上下文）
-    const chunksWithContext = group.map((index) => {
-      const chunk = chunks[index];
-      if (enableStyleConsistency && previousContext && index > 0) {
+    const chunksWithContext = group.map((actualIndex, groupPosition) => {
+      const chunk = chunks[actualIndex];
+      // 只有非第一个组的chunks才添加前文上下文（确保有完整的前文结果）
+      if (enableStyleConsistency && previousContext && groupIndex > 0) {
         return `[前文风格参考]\n${previousContext}\n\n[继续创作]\n${chunk}`;
       }
       return chunk;
