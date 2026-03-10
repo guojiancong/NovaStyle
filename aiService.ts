@@ -163,19 +163,23 @@ const detectChapterBoundaries = (text: string): number[] => {
  * 优先按章节分块，其次按语义边界分块
  */
 export const chunkText = (text: string, targetSize: number = 2000): string[] => {
+  console.log(`开始分块，原始文本长度: ${text.length} 字符`);
+
   const chunks: string[] = [];
-  
+
   // 1. 首先检测所有章节边界
   const chapterBoundaries = detectChapterBoundaries(text);
-  
+  console.log(`检测到 ${chapterBoundaries.length} 个章节边界`);
+
   // 2. 如果章节数量合理（每章不超过 targetSize * 3），直接按章节分块
   if (chapterBoundaries.length > 1) {
     const chapterChunks: string[] = [];
     for (let i = 0; i < chapterBoundaries.length; i++) {
       const start = chapterBoundaries[i];
       const end = i + 1 < chapterBoundaries.length ? chapterBoundaries[i + 1] : text.length;
-      const chapter = text.slice(start, end).trim();
-      
+      // 不使用 trim()，保留原始格式和空白字符
+      const chapter = text.slice(start, end);
+
       // 如果章节太大，需要进一步细分
       if (chapter.length > targetSize * 1.5) {
         const subChunks = splitLargeChapter(chapter, targetSize);
@@ -184,35 +188,53 @@ export const chunkText = (text: string, targetSize: number = 2000): string[] => 
         chapterChunks.push(chapter);
       }
     }
-    
-    // 如果分块数量合理，直接返回
-    if (chapterChunks.every(c => c.length <= targetSize * 1.2)) {
-      return chapterChunks;
-    }
+
+    console.log(`章节分块完成，共 ${chapterChunks.length} 个块`);
+
+    // 检查分块的完整性：确保所有内容都被包含
+    const totalChapterLength = chapterChunks.reduce((sum, c) => sum + c.length, 0);
+    console.log(`章节分块总长度: ${totalChapterLength}, 原始长度: ${text.length}`);
+
+    // 直接返回章节分块结果（不进行大小检查，避免跳过合理的章节分块）
+    console.log('使用章节分块结果');
+    return chapterChunks;
   }
-  
+
   // 3. 回退到智能分块策略
-  return smartChunk(text, targetSize);
+  console.log('使用智能分块策略');
+  const result = smartChunk(text, targetSize);
+  const totalLength = result.reduce((sum, c) => sum + c.length, 0);
+  console.log(`智能分块完成，共 ${result.length} 个块，总长度: ${totalLength}`);
+  return result;
 };
 
 /**
  * 细分大章节
  */
 const splitLargeChapter = (chapter: string, targetSize: number): string[] => {
+  console.log(`细分大章节，长度: ${chapter.length}, 目标大小: ${targetSize}`);
   const chunks: string[] = [];
   let remaining = chapter;
-  
+  let processedLength = 0;
+
   while (remaining.length > targetSize) {
     // 在章节内寻找最佳分割点
     const splitPos = findBestSplitPoint(remaining, targetSize);
-    chunks.push(remaining.slice(0, splitPos).trimEnd());
-    remaining = remaining.slice(splitPos).trimStart();
+    // 保留原始格式，只在分割点进行基本的分割
+    const chunk = remaining.slice(0, splitPos);
+    chunks.push(chunk);
+    processedLength += chunk.length;
+    remaining = remaining.slice(splitPos);
+
+    console.log(`细分块 ${chunks.length}: ${chunk.length} 字符，已处理: ${processedLength}/${chapter.length}`);
   }
-  
+
   if (remaining.length > 0) {
     chunks.push(remaining);
+    processedLength += remaining.length;
   }
-  
+
+  console.log(`细分完成，共 ${chunks.length} 个块，处理长度: ${processedLength}`);
   return chunks;
 };
 
@@ -261,20 +283,29 @@ const findBestSplitPoint = (text: string, targetSize: number): number => {
  * 智能分块策略（回退方案）
  */
 const smartChunk = (text: string, targetSize: number): string[] => {
+  console.log(`智能分块开始，文本长度: ${text.length}, 目标大小: ${targetSize}`);
   const chunks: string[] = [];
   let remaining = text;
-  
+  let processedLength = 0;
+
   while (remaining.length > 0) {
     if (remaining.length <= targetSize) {
       chunks.push(remaining);
+      processedLength += remaining.length;
+      remaining = '';
       break;
     }
-    
+
     const splitPos = findBestSplitPoint(remaining, targetSize);
-    chunks.push(remaining.slice(0, splitPos).trimEnd());
-    remaining = remaining.slice(splitPos).trimStart();
+    const chunk = remaining.slice(0, splitPos);
+    chunks.push(chunk);
+    processedLength += chunk.length;
+    remaining = remaining.slice(splitPos);
+
+    console.log(`分块 ${chunks.length}: ${chunk.length} 字符，已处理: ${processedLength}/${text.length}`);
   }
-  
+
+  console.log(`智能分块完成，共 ${chunks.length} 个块，处理长度: ${processedLength}`);
   return chunks;
 };
 

@@ -130,6 +130,13 @@ const App: React.FC = () => {
     estimatedCost: 0
   });
 
+  // 重试统计
+  const [retryStats, setRetryStats] = useState({
+    totalRetries: 0,
+    failedChunks: 0,
+    successfulWithRetry: 0
+  });
+
   // 恢复状态管理
   const [hasUnrestoredContent, setHasUnrestoredContent] = useState<boolean>(!!(savedProgress?.file || savedState?.file || savedState?.fullContent));
   const [showRestoreDialog, setShowRestoreDialog] = useState<boolean>(false);
@@ -640,12 +647,23 @@ const App: React.FC = () => {
     const chunks = chunkText(file.content, chunkSize);
     setProcessing(p => ({ ...p, totalChunks: chunks.length }));
 
+    // 验证分块完整性
+    const totalChunkLength = chunks.reduce((sum, c) => sum + c.length, 0);
+    const originalLength = file.content.length;
+    console.log(`分块验证: 原文 ${originalLength} 字符，分块后总计 ${totalChunkLength} 字符，${chunks.length} 个块`);
+    console.log(`长度差异: ${Math.abs(totalChunkLength - originalLength)} 字符 (${((Math.abs(totalChunkLength - originalLength) / originalLength) * 100).toFixed(2)}%)`);
+
     try {
       // 风格一致性增强
       const stylePrompt = systemTemplate.replace('${style}', selectedStyle.prompt);
 
       // 根据批量模式选择处理方式
       if (enableBatchMode && concurrency > 1 && chunks.length > 1) {
+        // 批量并行模式：不使用流式输出，避免状态混乱
+        // 清空之前的内容
+        fullProcessedText.current = "";
+        setPreviewContent("");
+
         // 批量并行模式（依赖组处理）
         const tempResults: Map<number, string> = new Map();
 
@@ -719,9 +737,27 @@ const App: React.FC = () => {
           }
         );
 
-        // 批量并行处理完成后，使用返回的正确排序的结果
-        // results数组已经按正确顺序排列，直接使用
+        // 批量并行处理完成后，清理临时数据
+        tempResults.clear();
+
+        // 验证结果完整性
+        console.log(`批量处理完成: 收到 ${results.length} 个结果，期望 ${chunks.length} 个`);
+
+        // 检查是否有空结果
+        const emptyIndices = results.map((r, i) => (!r || r.trim() === '') ? i : -1).filter(i => i >= 0);
+        if (emptyIndices.length > 0) {
+          console.warn(`发现 ${emptyIndices.length} 个空结果，索引: ${emptyIndices.join(', ')}`);
+        }
+
+        // 使用返回的正确排序的结果
         fullProcessedText.current = results.join('\n\n');
+
+        // 最终验证：检查输出长度
+        if (fullProcessedText.current.length === 0) {
+          throw new Error('处理结果为空，请检查API配置或重试');
+        }
+
+        console.log(`最终结果长度: ${fullProcessedText.current.length} 字符`);
         processedChunksRef.current = chunks.length;
       } else {
         // 顺序处理模式（支持暂停/恢复）
@@ -798,7 +834,18 @@ const App: React.FC = () => {
       
       forceUpdate({});
     } catch (e: any) {
-      setProcessing(p => ({ ...p, isProcessing: false, error: e.message }));
+      console.error('处理过程中出现错误:', e);
+      setProcessing(p => ({
+        ...p,
+        isProcessing: false,
+        error: e.message || '处理失败，请检查网络连接和API配置'
+      }));
+
+      // 如果是批量模式且有部分结果，保存已处理的内容
+      if (enableBatchMode && fullProcessedText.current.length > 0) {
+        const partialResults = `=== 部分处理结果 ===\n处理过程中断，已保存部分内容。\n错误信息: ${e.message}\n\n${fullProcessedText.current}`;
+        console.log('保存部分结果，长度:', fullProcessedText.current.length);
+      }
     }
   };
 
