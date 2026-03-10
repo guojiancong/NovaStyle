@@ -949,7 +949,7 @@ const App: React.FC = () => {
       <div className="h-10 glass-panel flex items-center justify-between px-4 border-b border-white/10 select-none shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 bg-blue-500 rounded-full shadow-[0_0_8px_rgba(59,130,246,0.6)]"></div>
-          <span className="text-xs font-semibold tracking-wider text-slate-300 uppercase">NovaStyle Matrix v2.4 - 并行批量版</span>
+          <span className="text-xs font-semibold tracking-wider text-slate-300 uppercase">NovaStyle Matrix v2.5 - 并行批量版</span>
         </div>
       </div>
 
@@ -1346,7 +1346,7 @@ const App: React.FC = () => {
           <span>MEMORY: {(fullProcessedText.current.length / 1024 / 1024).toFixed(2)} MB</span>
           <span>STYLE: {enableStyleConsistency ? '一致性增强 ON' : 'OFF'}</span>
         </div>
-        <div className="bg-white/10 px-2 py-0.5 rounded">NOVA-STYLE v2.4-PARALLEL</div>
+        <div className="bg-white/10 px-2 py-0.5 rounded">NOVA-STYLE v2.5-PARALLEL</div>
       </footer>
 
       {/* 风格市场弹窗 */}
