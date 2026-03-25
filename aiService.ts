@@ -136,17 +136,35 @@ const handleOpenAICompatible = async (
 };
 
 /**
+ * 检测文本的换行符类型
+ * 返回 'crlf' (Windows \r\n) 或 'lf' (Unix \n)
+ */
+const detectLineEnding = (text: string): 'crlf' | 'lf' => {
+  // 检测是否存在 \r\n
+  if (text.includes('\r\n')) {
+    return 'crlf';
+  }
+  return 'lf';
+};
+
+/**
  * 智能检测章节边界
- * 返回所有章节起始位置
+ * 支持 Windows (\r\n) 和 Unix (\n) 换行符
+ * 返回所有章节起始位置（已排序去重）
  */
 const detectChapterBoundaries = (text: string): number[] => {
   const boundaries: number[] = [0];
-  
+  const lineEnding = detectLineEnding(text);
+
+  // 根据换行符类型调整正则表达式
+  // 使用 \r?\n 来兼容两种换行符
+  const newlinePattern = /\r?\n/;
+
   // 中文章节模式
-  const chineseChapterPattern = /(?:^|\n)\s*(第 [一二三四五六七八九十百千万零 0-9]+\s*[章节卷回]|楔子 | 序章 | 前言 | 引言 | 内容简介 | 目录 | 番外 | 后记 | 尾声)/gi;
+  const chineseChapterPattern = /(?:^|\r?\n)\s*(第 [一二三四五六七八九十百千万零 0-9]+\s*[章节卷回]|楔子 | 序章 | 前言 | 引言 | 内容简介 | 目录 | 番外 | 后记 | 尾声)/gi;
   // 英文章节模式
-  const englishChapterPattern = /(?:^|\n)\s*(Chapter\s*\d+|Prologue|Epilogue|Introduction|Preface|Contents|Appendix)/gi;
-  
+  const englishChapterPattern = /(?:^|\r?\n)\s*(Chapter\s*\d+|Prologue|Epilogue|Introduction|Preface|Contents|Appendix)/gi;
+
   let match;
   while ((match = chineseChapterPattern.exec(text)) !== null) {
     boundaries.push(match.index);
@@ -154,8 +172,14 @@ const detectChapterBoundaries = (text: string): number[] => {
   while ((match = englishChapterPattern.exec(text)) !== null) {
     boundaries.push(match.index);
   }
-  
-  return boundaries.sort((a, b) => a - b);
+
+  // 排序并去重
+  const sortedBoundaries = boundaries.sort((a, b) => a - b);
+  const uniqueBoundaries = sortedBoundaries.filter((value, index, self) =>
+    index === 0 || value !== self[index - 1]
+  );
+
+  return uniqueBoundaries;
 };
 
 /**
@@ -240,18 +264,41 @@ const splitLargeChapter = (chapter: string, targetSize: number): string[] => {
 
 /**
  * 寻找最佳分割点
+ * 支持 Windows (\r\n) 和 Unix (\n) 换行符
+ * 确保不在段落分隔符中间分割
  */
 const findBestSplitPoint = (text: string, targetSize: number): number => {
   let splitPos = targetSize;
-  
-  // 1. 优先在段落边界分割
-  const dnlIndex = text.lastIndexOf('\n\n', targetSize);
-  if (dnlIndex > targetSize * 0.6) {
-    return dnlIndex + 2;
+  const lineEnding = detectLineEnding(text);
+
+  // 1. 优先在段落边界分割（双换行符）
+  // 检测 \n\n 或 \r\n\r\n
+  let bestSplit = -1;
+  let searchLimit = Math.floor(targetSize * 1.2);
+
+  // 搜索双换行符位置（完整匹配）
+  for (let i = searchLimit; i >= targetSize * 0.6 && i >= 0; i--) {
+    // 检查 \n\n (Unix)
+    if (text[i - 1] === '\n' && text[i] === '\n') {
+      bestSplit = i;
+      break;
+    }
+    // 检查 \r\n\r\n (Windows) - 需要完整匹配4个字符
+    if (lineEnding === 'crlf' && i >= 3 &&
+        text[i - 3] === '\r' && text[i - 2] === '\n' &&
+        text[i - 1] === '\r' && text[i] === '\n') {
+      bestSplit = i + 1; // 指向第二个 \r\n 的末尾
+      break;
+    }
   }
-  
+
+  if (bestSplit > 0) {
+    return bestSplit;
+  }
+
   // 2. 其次在句子边界分割
-  const sentencePattern = /[。！？.!?][\s\n]*/g;
+  // 句子结束符：。！？.!? 后跟空白或换行
+  const sentencePattern = /[。！？.!?][\s\r\n]*/g;
   let lastSentenceEnd = -1;
   let match;
   while ((match = sentencePattern.exec(text)) !== null) {
@@ -259,23 +306,44 @@ const findBestSplitPoint = (text: string, targetSize: number): number => {
     if (match.index > targetSize * 1.2) break;
     lastSentenceEnd = match.index + match[0].length;
   }
-  
+
   if (lastSentenceEnd > 0) {
     return lastSentenceEnd;
   }
-  
+
   // 3. 再次在单行边界分割
-  const newlineIndex = text.lastIndexOf('\n', splitPos);
-  if (newlineIndex > targetSize * 0.6) {
-    return newlineIndex + 1;
+  // 查找最近的换行符，但避免在段落分隔符中间分割
+  let newlinePos = -1;
+  for (let i = Math.floor(targetSize); i >= targetSize * 0.6 && i >= 0; i--) {
+    // 检查是否是段落分隔符的一部分（向前看）
+    if (text[i] === '\n') {
+      // 如果前面是 \r，则检查是否形成 \r\n\r\n 的一部分
+      if (lineEnding === 'crlf' && i >= 1 && text[i - 1] === '\r') {
+        // 继续向前检查是否有 \r\n\r\n
+        if (i >= 3 && text[i - 3] === '\r' && text[i - 2] === '\n') {
+          continue; // 跳过，这是段落分隔符的一部分
+        }
+        // 是 \r\n，但不是 \r\n\r\n 的一部分
+        newlinePos = i + 1;
+        break;
+      } else if (lineEnding !== 'crlf' && text[i - 1] !== '\n') {
+        // Unix 模式，检查前面是否也是 \n（形成 \n\n）
+        newlinePos = i + 1;
+        break;
+      }
+    }
   }
-  
+
+  if (newlinePos > 0) {
+    return newlinePos;
+  }
+
   // 4. 最后在标点处分割
   const lastPunctuation = text.slice(0, targetSize).search(/[。！？.!?][^。！？.!?]*$/);
   if (lastPunctuation > targetSize * 0.6) {
     return lastPunctuation + 1;
   }
-  
+
   return splitPos;
 };
 
@@ -465,6 +533,62 @@ export const addStyleContext = (
 };
 
 /**
+ * 智能合并分块结果
+ * 自动检测并处理分块边界的换行符，避免重复添加分隔符
+ * 支持 Windows (\r\n) 和 Unix (\n) 换行符
+ */
+export const smartJoinChunks = (chunks: string[]): string => {
+  if (chunks.length === 0) return '';
+  if (chunks.length === 1) return chunks[0];
+
+  // 检测文本的换行符类型
+  const lineEnding = detectLineEnding(chunks[0]);
+
+  // 定义段落分隔符模式（双换行符）
+  const paragraphSeparator = lineEnding === 'crlf' ? '\r\n\r\n' : '\n\n';
+  // 定义单行换行符
+  const singleNewline = lineEnding === 'crlf' ? '\r\n' : '\n';
+
+  const result: string[] = [];
+
+  for (let i = 0; i < chunks.length; i++) {
+    const currentChunk = chunks[i];
+
+    if (i === 0) {
+      // 第一个分块：移除末尾可能多余的段落分隔符
+      if (currentChunk.endsWith(paragraphSeparator)) {
+        result.push(currentChunk.slice(0, -paragraphSeparator.length));
+      } else {
+        result.push(currentChunk);
+      }
+    } else {
+      const prevChunk = result[result.length - 1];
+      let chunkToAdd = currentChunk;
+
+      // 如果当前块开头有段落分隔符或单行换行符，移除它们
+      // 优先移除段落分隔符
+      if (currentChunk.startsWith(paragraphSeparator)) {
+        chunkToAdd = currentChunk.slice(paragraphSeparator.length);
+      } else if (currentChunk.startsWith(singleNewline)) {
+        // 如果只以单行换行符开头，也移除它
+        chunkToAdd = currentChunk.slice(singleNewline.length);
+      }
+
+      // 检查前一个块末尾是否已有段落分隔符
+      if (prevChunk.endsWith(paragraphSeparator)) {
+        // 前一块末尾已有分隔符，直接添加（不需要添加额外分隔符）
+        result[result.length - 1] = prevChunk + chunkToAdd;
+      } else {
+        // 前一块末尾没有分隔符，添加分隔符
+        result[result.length - 1] = prevChunk + paragraphSeparator + chunkToAdd;
+      }
+    }
+  }
+
+  return result.join('');
+};
+
+/**
  * 优化后的流式处理
  * 支持增量更新和断点续传
  */
@@ -504,5 +628,5 @@ export const streamProcess = async (
     }
   }
   
-  return results.join('\n\n');
+  return smartJoinChunks(results);
 };

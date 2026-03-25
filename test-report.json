@@ -1,0 +1,15 @@
+{
+  "testDate": "2026-03-25T06:37:16.624Z",
+  "config": {
+    "targetSize": 2000,
+    "concurrency": 3
+  },
+  "results": {
+    "originalLength": 32100,
+    "mergedLength": 32100,
+    "chunksCount": 14,
+    "lengthMatch": true,
+    "contentMatch": true
+  },
+  "processingTime": 39855
+}

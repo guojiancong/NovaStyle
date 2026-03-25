@@ -8,7 +8,7 @@ import {
   ZapOff, Timer, CpuOff, Cloud, Share2
 } from 'lucide-react';
 import { StyleConfig, DefaultStyles, ModelType, ModelMetadata, ProviderType, CustomModel, ProcessingState, FileMetadata } from './types';
-import { chunkText, streamProcess, processChunksWithDependencies, rewriteTextChunk } from './aiService';
+import { chunkText, streamProcess, processChunksWithDependencies, rewriteTextChunk, smartJoinChunks } from './aiService';
 import StyleMarket from './StyleMarket';
 
 const APP_STATE_KEY = 'nova_v1_app_state';
@@ -707,11 +707,11 @@ const App: React.FC = () => {
               estimatedCost: (prev.output + newTokens) * 0.002 / 1000
             }));
 
-            // 更新预览显示（按已完成的chunk顺序）
+            // 更新预览显示（按已完成的chunk顺序，使用智能合并）
             const sortedTempResults = Array.from(tempResults.entries())
               .sort((a, b) => a[0] - b[0])
               .map(entry => entry[1]);
-            const previewText = sortedTempResults.join('\n\n');
+            const previewText = smartJoinChunks(sortedTempResults);
 
             setPreviewContent(
               previewText.length > MAX_PREVIEW_LENGTH
@@ -749,8 +749,8 @@ const App: React.FC = () => {
           console.warn(`发现 ${emptyIndices.length} 个空结果，索引: ${emptyIndices.join(', ')}`);
         }
 
-        // 使用返回的正确排序的结果
-        fullProcessedText.current = results.join('\n\n');
+        // 使用返回的正确排序的结果（使用智能合并避免重复分隔符）
+        fullProcessedText.current = smartJoinChunks(results);
 
         // 最终验证：检查输出长度
         if (fullProcessedText.current.length === 0) {
