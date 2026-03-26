@@ -75,11 +75,10 @@ const App: React.FC = () => {
     if (savedState?.theme) return savedState?.theme;
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   });
-  
+
   // 性能优化选项
   const [enableBatchMode, setEnableBatchMode] = useState(false);
   const [concurrency, setConcurrency] = useState(2);
-  const [enableStyleConsistency, setEnableStyleConsistency] = useState(true);
   const [chunkSize, setChunkSize] = useState(2000);
 
   const fullProcessedText = useRef<string>("");
@@ -401,7 +400,7 @@ const App: React.FC = () => {
         file, encoding, provider, selectedModel, selectedStyleId,
         selectedCustomModelId, progress: processing.progress,
         totalChunks: processing.totalChunks, viewMode, langFilter,
-        enableBatchMode, concurrency, enableStyleConsistency, chunkSize,
+        enableBatchMode, concurrency, chunkSize,
         theme
       };
       if (fullProcessedText.current.length < STORAGE_LIMIT) {
@@ -410,7 +409,7 @@ const App: React.FC = () => {
       localStorage.setItem(APP_STATE_KEY, JSON.stringify(stateToSave));
     }, 5000);
     return () => clearTimeout(timeoutId);
-  }, [file, encoding, provider, selectedModel, selectedStyleId, selectedCustomModelId, processing.progress, processing.totalChunks, viewMode, langFilter, enableBatchMode, concurrency, enableStyleConsistency, chunkSize, fullProcessedText.current, theme]);
+  }, [file, encoding, provider, selectedModel, selectedStyleId, selectedCustomModelId, processing.progress, processing.totalChunks, viewMode, langFilter, enableBatchMode, concurrency, chunkSize, fullProcessedText.current, theme]);
 
   // --- 管理功能函数 ---
   const addNewStyle = () => {
@@ -674,7 +673,6 @@ const App: React.FC = () => {
           selectedModel,
           currentCustomModel,
           concurrency,
-          enableStyleConsistency,
           (completed, total, chunkIndex, result) => {
             // 临时存储已完成的结果用于预览
             tempResults.set(chunkIndex, result);
@@ -770,17 +768,7 @@ const App: React.FC = () => {
 
           setProcessing(p => ({ ...p, currentChunk: `正在处理第 ${i + 1} / ${chunks.length} 段...` }));
 
-          // 获取前文用于风格一致性
-          const previousChunk = enableStyleConsistency && i > 0
-            ? fullProcessedText.current.slice(-1000)
-            : null;
-
-          // 添加风格上下文
-          const chunkWithContext = enableStyleConsistency && previousChunk
-            ? `[前文风格参考]\n${previousChunk}\n\n[继续创作]\n${chunks[i]}`
-            : chunks[i];
-
-          const result = await rewriteTextChunk(chunkWithContext, stylePrompt, provider, selectedModel, currentCustomModel, (part) => appendText(part));
+          const result = await rewriteTextChunk(chunks[i], stylePrompt, provider, selectedModel, currentCustomModel, (part) => appendText(part));
 
           processedChunksRef.current++;
           const elapsed = (Date.now() - startTimeRef.current) / 1000;
@@ -1024,10 +1012,6 @@ const App: React.FC = () => {
               <div className="flex items-center justify-between">
                 <label className="text-[10px] text-slate-300">智能分块</label>
                 <input type="number" value={chunkSize} onChange={(e) => setChunkSize(Number(e.target.value))} className="w-20 bg-slate-900 border border-white/10 rounded px-2 py-1 text-[10px]" min="500" max="5000" step="500" />
-              </div>
-              <div className="flex items-center justify-between">
-                <label className="text-[10px] text-slate-300">风格一致性</label>
-                <input type="checkbox" checked={enableStyleConsistency} onChange={(e) => setEnableStyleConsistency(e.target.checked)} className="toggle-checkbox" />
               </div>
               <div className="flex items-center justify-between">
                 <label className="text-[10px] text-slate-300">批量模式</label>
@@ -1344,9 +1328,8 @@ const App: React.FC = () => {
         <div className="flex gap-6 uppercase">
           <span>STATUS: {processing.isProcessing ? (isPaused ? 'PAUSED' : 'ACTIVE') : 'READY'}</span>
           <span>MEMORY: {(fullProcessedText.current.length / 1024 / 1024).toFixed(2)} MB</span>
-          <span>STYLE: {enableStyleConsistency ? '一致性增强 ON' : 'OFF'}</span>
         </div>
-        <div className="bg-white/10 px-2 py-0.5 rounded">NOVA-STYLE v2.5-PARALLEL</div>
+        <div className="bg-white/10 px-2 py-0.5 rounded">NOVA-STYLE v2.5</div>
       </footer>
 
       {/* 风格市场弹窗 */}

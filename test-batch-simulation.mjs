@@ -259,11 +259,10 @@ async function mockRewriteTextChunk(text, delay) {
 }
 
 /**
- * 模拟 processChunksWithDependencies
+ * 模拟 processChunksWithDependencies（已移除风格一致性）
  */
-async function processChunksWithDependencies(chunks, concurrency = 3, enableStyleConsistency = false) {
+async function processChunksWithDependencies(chunks, concurrency = 3) {
   const allResults = new Array(chunks.length);
-  const totalChunks = chunks.length;
 
   // 创建依赖组：每个组的大小等于并发数
   const groups = [];
@@ -282,36 +281,15 @@ async function processChunksWithDependencies(chunks, concurrency = 3, enableStyl
   for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
     const group = groups[groupIndex];
 
-    // 获取前文上下文（用于风格一致性）
-    let previousContext = null;
-    if (enableStyleConsistency && groupIndex > 0) {
-      const previousResults = [];
-      for (let i = 0; i < group[0]; i++) {
-        if (allResults[i]) {
-          previousResults.push(allResults[i]);
-        }
-      }
-      previousContext = previousResults.slice(-3).join('\n\n').slice(-1500);
-    }
-
-    // 准备本组需要处理的 chunks
-    const chunksWithContext = group.map((actualIndex, groupPosition) => {
-      const chunk = chunks[actualIndex];
-      if (enableStyleConsistency && previousContext && groupIndex > 0) {
-        return `[前文风格参考]\n${previousContext}\n\n[继续创作]\n${chunk}`;
-      }
-      return chunk;
-    });
-
-    // 并行处理本组内的 chunks（带随机延时）
+    // 并行处理本组内的chunks（组内并行）
     await Promise.all(
       group.map(async (chunkIndexInGroup, i) => {
         const actualIndex = group[i];
-        const randomDelay = Math.floor(Math.random() * 10000); // 0-10秒随机延时
+        const randomDelay = Math.floor(Math.random() * 10000);
 
         console.log(`  [${new Date().toISOString()}] 开始处理分块 ${actualIndex}，延时 ${(randomDelay / 1000).toFixed(1)}s`);
 
-        const result = await mockRewriteTextChunk(chunksWithContext[i], randomDelay);
+        const result = await mockRewriteTextChunk(chunks[actualIndex], randomDelay);
 
         allResults[actualIndex] = result;
         console.log(`  [${new Date().toISOString()}] 分块 ${actualIndex} 处理完成`);

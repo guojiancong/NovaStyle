@@ -433,8 +433,8 @@ export const batchRewrite = async (
 };
 
 /**
- * 依赖组并行处理（确保风格一致性）
- * 将分块分为多个组，组内并行，组间串行（依赖前一组结果）
+ * 依赖组并行处理
+ * 将分块分为多个组，组内并行，组间串行
  */
 export const processChunksWithDependencies = async (
   chunks: string[],
@@ -443,7 +443,6 @@ export const processChunksWithDependencies = async (
   model: ModelType | string,
   customConfig?: CustomModel,
   concurrency: number = 3,
-  enableStyleConsistency: boolean = false,
   onProgress?: (completed: number, total: number, chunkIndex: number, result: string) => void
 ): Promise<string[]> => {
   const allResults: string[] = new Array(chunks.length);
@@ -462,35 +461,12 @@ export const processChunksWithDependencies = async (
   for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
     const group = groups[groupIndex];
 
-    // 获取前文上下文（用于风格一致性）
-    let previousContext: string | null = null;
-    if (enableStyleConsistency && groupIndex > 0) {
-      // 获取前面已处理的所有结果，提取最后1500字符作为上下文
-      const previousResults: string[] = [];
-      for (let i = 0; i < group[0]; i++) {
-        if (allResults[i]) {
-          previousResults.push(allResults[i]);
-        }
-      }
-      previousContext = previousResults.slice(-3).join('\n\n').slice(-1500);
-    }
-
-    // 准备本组需要处理的chunks（带上下文）
-    const chunksWithContext = group.map((actualIndex, groupPosition) => {
-      const chunk = chunks[actualIndex];
-      // 只有非第一个组的chunks才添加前文上下文（确保有完整的前文结果）
-      if (enableStyleConsistency && previousContext && groupIndex > 0) {
-        return `[前文风格参考]\n${previousContext}\n\n[继续创作]\n${chunk}`;
-      }
-      return chunk;
-    });
-
     // 并行处理本组内的chunks（组内并行）
     await Promise.all(
       group.map(async (chunkIndexInGroup, i) => {
         const actualIndex = group[i];
         const result = await rewriteTextChunk(
-          chunksWithContext[i],
+          chunks[actualIndex],
           systemInstruction,
           provider,
           model,
@@ -510,26 +486,6 @@ export const processChunksWithDependencies = async (
   }
 
   return allResults;
-};
-
-/**
- * 风格一致性增强
- * 添加上下文前缀，保持全文风格统一
- */
-export const addStyleContext = (
-  chunk: string,
-  previousChunk: string | null,
-  stylePrompt: string
-): string => {
-  if (!previousChunk) {
-    return chunk;
-  }
-  
-  // 添加前文摘要作为上下文参考
-  const contextLength = Math.min(500, previousChunk.length);
-  const context = previousChunk.slice(-contextLength);
-  
-  return `[前文风格参考]\n${context}\n\n[继续创作]\n${chunk}`;
 };
 
 /**
@@ -589,8 +545,8 @@ export const smartJoinChunks = (chunks: string[]): string => {
 };
 
 /**
- * 优化后的流式处理
- * 支持增量更新和断点续传
+ * 流式顺序处理
+ * 顺序处理每个分块
  */
 export const streamProcess = async (
   chunks: string[],
@@ -602,31 +558,26 @@ export const streamProcess = async (
   signal?: AbortSignal
 ): Promise<string> => {
   const results: string[] = [];
-  let previousResult: string | null = null;
-  
+
   for (let i = 0; i < chunks.length; i++) {
     if (signal?.aborted) {
       throw new Error('处理已取消');
     }
-    
-    // 添加风格上下文，保持一致性
-    const chunkWithContext = addStyleContext(chunks[i], previousResult, systemInstruction);
-    
+
     const result = await rewriteTextChunk(
-      chunkWithContext,
+      chunks[i],
       systemInstruction,
       provider,
       model,
       customConfig
     );
-    
+
     results.push(result);
-    previousResult = result;
-    
+
     if (onChunkComplete) {
       onChunkComplete(i, result);
     }
   }
-  
+
   return smartJoinChunks(results);
 };
