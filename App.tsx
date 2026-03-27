@@ -1202,7 +1202,7 @@ const App: React.FC = () => {
                   </div>
                 )}
                 <button onClick={() => {
-                  if (savedProgress && savedProgress.progress > 0) {
+                  if (savedProgress && savedProgress.progress > 0 && savedProgress.progress < 100) {
                     if (confirm('发现未完成任务，是否恢复进度？')) {
                       fullProcessedText.current = savedProgress.fullProcessedText || "";
                       setPreviewContent(savedProgress.fullProcessedText || "");
