@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { ModelType, ProviderType, CustomModel } from "./types";
+import { ModelType, ProviderType, CustomModel, OllamaConfig } from "./types";
 
 /**
  * Service to rewrite text chunks using various AI providers.
@@ -10,10 +10,14 @@ export const rewriteTextChunk = async (
   provider: ProviderType,
   model: ModelType | string,
   customConfig?: CustomModel,
+  ollamaConfig?: OllamaConfig,
   onUpdate?: (chunk: string) => void
 ): Promise<string> => {
   if (provider === ProviderType.GEMINI) {
     return handleGemini(text, systemInstruction, model as ModelType, onUpdate);
+  } else if (provider === ProviderType.OLLAMA) {
+    if (!ollamaConfig) throw new Error("未提供 Ollama 配置");
+    return handleOllama(text, systemInstruction, ollamaConfig, onUpdate);
   } else {
     if (!customConfig) throw new Error("未提供自定义模型配置");
     return handleOpenAICompatible(text, systemInstruction, customConfig, onUpdate);
@@ -132,6 +136,87 @@ const handleOpenAICompatible = async (
   } catch (error: any) {
     console.error("OpenAI Compatible Error:", error);
     throw new Error(`自定义模型重塑失败：${error.message}`);
+  }
+};
+
+/**
+ * 获取 Ollama 可用模型列表
+ */
+export const fetchOllamaModels = async (baseUrl: string): Promise<string[]> => {
+  const url = `${baseUrl.replace(/\/$/, '')}/api/tags`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`无法连接到 Ollama 服务 (${response.status})`);
+  const data = await response.json();
+  return (data.models || []).map((m: any) => m.name || m.model);
+};
+
+/**
+ * Handle rewrite task using Ollama local model (OpenAI-compatible endpoint).
+ */
+const handleOllama = async (
+  text: string,
+  systemInstruction: string,
+  config: OllamaConfig,
+  onUpdate?: (chunk: string) => void
+): Promise<string> => {
+  const url = `${config.baseUrl.replace(/\/$/, '')}/v1/chat/completions`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: config.modelName,
+        messages: [
+          { role: 'system', content: systemInstruction },
+          { role: 'user', content: text }
+        ],
+        stream: true,
+        temperature: 0.8,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`Ollama Error: ${response.status} ${errorData.error?.message || ''}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("无法读取响应流");
+
+    const decoder = new TextDecoder();
+    let fullText = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n').filter(line => line.trim() !== '');
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const dataStr = line.replace('data: ', '').trim();
+          if (dataStr === '[DONE]') break;
+
+          try {
+            const data = JSON.parse(dataStr);
+            const content = data.choices?.[0]?.delta?.content || "";
+            if (content) {
+              fullText += content;
+              if (onUpdate) onUpdate(content);
+            }
+          } catch (e) {
+            console.warn("Error parsing Ollama chunk", e);
+          }
+        }
+      }
+    }
+
+    return fullText;
+  } catch (error: any) {
+    console.error("Ollama Error:", error);
+    throw new Error(`Ollama 重塑失败：${error.message}`);
   }
 };
 
@@ -387,6 +472,7 @@ export const batchRewrite = async (
   provider: ProviderType,
   model: ModelType | string,
   customConfig?: CustomModel,
+  ollamaConfig?: OllamaConfig,
   concurrency: number = 3,
   onProgress?: (completed: number, total: number, result: string) => void
 ): Promise<string[]> => {
@@ -415,7 +501,8 @@ export const batchRewrite = async (
         systemInstruction,
         provider,
         model,
-        customConfig
+        customConfig,
+        ollamaConfig
       );
       results[index] = result;
       completed++;
@@ -442,6 +529,7 @@ export const processChunksWithDependencies = async (
   provider: ProviderType,
   model: ModelType | string,
   customConfig?: CustomModel,
+  ollamaConfig?: OllamaConfig,
   concurrency: number = 3,
   onProgress?: (completed: number, total: number, chunkIndex: number, result: string) => void
 ): Promise<string[]> => {
@@ -470,7 +558,8 @@ export const processChunksWithDependencies = async (
           systemInstruction,
           provider,
           model,
-          customConfig
+          customConfig,
+          ollamaConfig
         );
 
         // 立即存储结果并回调
@@ -554,6 +643,7 @@ export const streamProcess = async (
   provider: ProviderType,
   model: ModelType | string,
   customConfig?: CustomModel,
+  ollamaConfig?: OllamaConfig,
   onChunkComplete?: (index: number, result: string) => void,
   signal?: AbortSignal
 ): Promise<string> => {
@@ -569,7 +659,8 @@ export const streamProcess = async (
       systemInstruction,
       provider,
       model,
-      customConfig
+      customConfig,
+      ollamaConfig
     );
 
     results.push(result);

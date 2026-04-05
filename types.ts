@@ -179,6 +179,7 @@ export const DefaultStyles: StyleConfig[] = [
 export enum ProviderType {
   GEMINI = 'Google Gemini',
   OPENAI_COMPATIBLE = 'OpenAI 兼容 (DeepSeek/Qwen等)',
+  OLLAMA = 'Ollama (本地模型)',
 }
 
 export enum ModelType {
@@ -199,6 +200,11 @@ export interface CustomModel {
   baseUrl: string;
   modelName: string;
   apiKey: string;
+}
+
+export interface OllamaConfig {
+  baseUrl: string;
+  modelName: string;
 }
 
 export interface ProcessingState {

@@ -7,8 +7,8 @@ import {
   Columns, Eye, Command, RotateCcw, Gauge, Layers,
   ZapOff, Timer, CpuOff, Cloud, Share2
 } from 'lucide-react';
-import { StyleConfig, DefaultStyles, ModelType, ModelMetadata, ProviderType, CustomModel, ProcessingState, FileMetadata } from './types';
-import { chunkText, streamProcess, processChunksWithDependencies, rewriteTextChunk, smartJoinChunks } from './aiService';
+import { StyleConfig, DefaultStyles, ModelType, ModelMetadata, ProviderType, CustomModel, OllamaConfig, ProcessingState, FileMetadata } from './types';
+import { chunkText, streamProcess, processChunksWithDependencies, rewriteTextChunk, smartJoinChunks, fetchOllamaModels } from './aiService';
 import StyleMarket from './StyleMarket';
 
 const APP_STATE_KEY = 'nova_v1_app_state';
@@ -105,6 +105,15 @@ const App: React.FC = () => {
   });
   const [selectedCustomModelId, setSelectedCustomModelId] = useState<string>(savedState?.selectedCustomModelId || customModels[0]?.id || '');
   const [isEditingModel, setIsEditingModel] = useState(false);
+
+  // --- Ollama 本地模型状态 ---
+  const [ollamaConfig, setOllamaConfig] = useState<OllamaConfig>(() => {
+    const saved = localStorage.getItem('nova_ollama_config');
+    return saved ? JSON.parse(saved) : { baseUrl: 'http://192.168.111.10:11434', modelName: '' };
+  });
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [isLoadingOllamaModels, setIsLoadingOllamaModels] = useState(false);
+  const [ollamaModelError, setOllamaModelError] = useState<string>('');
 
   const [systemTemplate, setSystemTemplate] = useState<string>(() => localStorage.getItem('nova_system_template') || DEFAULT_SYSTEM_TEMPLATE);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
@@ -314,6 +323,36 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('nova_custom_models', JSON.stringify(customModels));
   }, [customModels]);
+
+  useEffect(() => {
+    localStorage.setItem('nova_ollama_config', JSON.stringify(ollamaConfig));
+  }, [ollamaConfig]);
+
+  // 当切换到 Ollama 提供商时自动拉取模型列表
+  useEffect(() => {
+    if (provider === ProviderType.OLLAMA && ollamaConfig.baseUrl) {
+      loadOllamaModels();
+    }
+  }, [provider, ollamaConfig.baseUrl]);
+
+  const loadOllamaModels = async () => {
+    if (!ollamaConfig.baseUrl) return;
+    setIsLoadingOllamaModels(true);
+    setOllamaModelError('');
+    try {
+      const models = await fetchOllamaModels(ollamaConfig.baseUrl);
+      setOllamaModels(models);
+      // 自动选择第一个模型（如果当前没有选择）
+      if (models.length > 0 && !ollamaConfig.modelName) {
+        setOllamaConfig(prev => ({ ...prev, modelName: models[0] }));
+      }
+    } catch (e: any) {
+      setOllamaModelError(e.message || '无法连接 Ollama 服务');
+      setOllamaModels([]);
+    } finally {
+      setIsLoadingOllamaModels(false);
+    }
+  };
 
   useEffect(() => {
     localStorage.setItem('nova_system_template', systemTemplate);
@@ -672,6 +711,7 @@ const App: React.FC = () => {
           provider,
           selectedModel,
           currentCustomModel,
+          provider === ProviderType.OLLAMA ? ollamaConfig : undefined,
           concurrency,
           (completed, total, chunkIndex, result) => {
             // 临时存储已完成的结果用于预览
@@ -768,7 +808,7 @@ const App: React.FC = () => {
 
           setProcessing(p => ({ ...p, currentChunk: `正在处理第 ${i + 1} / ${chunks.length} 段...` }));
 
-          const result = await rewriteTextChunk(chunks[i], stylePrompt, provider, selectedModel, currentCustomModel, (part) => appendText(part));
+          const result = await rewriteTextChunk(chunks[i], stylePrompt, provider, selectedModel, currentCustomModel, provider === ProviderType.OLLAMA ? ollamaConfig : undefined, (part) => appendText(part));
 
           processedChunksRef.current++;
           const elapsed = (Date.now() - startTimeRef.current) / 1000;
@@ -972,9 +1012,9 @@ const App: React.FC = () => {
                 </div>
               )}
             </div>
-            <div className="grid grid-cols-2 gap-2 mb-3">
+            <div className="grid grid-cols-3 gap-1.5 mb-3">
               {Object.values(ProviderType).map((p) => (
-                <button key={p} onClick={() => setProvider(p)} className={`px-2 py-1.5 text-center text-[10px] font-bold rounded-lg border transition-all ${provider === p ? 'bg-orange-600/20 border-orange-500 text-orange-200' : 'bg-white/5 border-white/5 text-slate-400'}`}>{p.split(' ')[0]}</button>
+                <button key={p} onClick={() => setProvider(p)} className={`px-1 py-1.5 text-center text-[9px] font-bold rounded-lg border transition-all ${provider === p ? 'bg-orange-600/20 border-orange-500 text-orange-200' : 'bg-white/5 border-white/5 text-slate-400'}`}>{p.split(' ')[0]}</button>
               ))}
             </div>
 
@@ -986,6 +1026,40 @@ const App: React.FC = () => {
                     <span className="text-[10px] font-bold">{meta.name}</span>
                   </button>
                 ))}
+              </div>
+            ) : provider === ProviderType.OLLAMA ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <input
+                    value={ollamaConfig.baseUrl}
+                    onChange={(e) => setOllamaConfig(prev => ({ ...prev, baseUrl: e.target.value }))}
+                    className="flex-1 bg-slate-900 border border-white/5 rounded-md px-2 py-1 text-[10px]"
+                    placeholder="http://192.168.111.10:11434"
+                  />
+                  <button
+                    onClick={loadOllamaModels}
+                    disabled={isLoadingOllamaModels}
+                    className="p-1 hover:bg-white/10 rounded text-orange-400 disabled:opacity-50"
+                    title="刷新模型列表"
+                  >
+                    <RefreshCw size={14} className={isLoadingOllamaModels ? 'animate-spin' : ''} />
+                  </button>
+                </div>
+                {ollamaModelError && (
+                  <p className="text-[9px] text-red-400 bg-red-500/10 px-2 py-1 rounded">{ollamaModelError}</p>
+                )}
+                {ollamaModels.length > 0 ? (
+                  <select
+                    value={ollamaConfig.modelName}
+                    onChange={(e) => setOllamaConfig(prev => ({ ...prev, modelName: e.target.value }))}
+                    className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1.5 text-[10px] text-slate-200"
+                  >
+                    {ollamaModels.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                ) : !isLoadingOllamaModels && ollamaConfig.baseUrl && !ollamaModelError ? (
+                  <p className="text-[9px] text-slate-500 text-center py-1">未发现模型，请检查 Ollama 服务</p>
+                ) : null}
+                <p className="text-[8px] text-slate-600 text-center">无需 API Key · 局域网直连</p>
               </div>
             ) : (
               <div className="space-y-2">
@@ -1230,7 +1304,7 @@ const App: React.FC = () => {
         <main className="flex-1 flex flex-col bg-[#080d19] p-6 gap-6 overflow-hidden">
           <div className="flex items-center justify-between shrink-0">
             <div>
-              <h1 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">重塑矩阵 <span className="text-[10px] bg-blue-600 px-2 py-0.5 rounded uppercase">{provider === ProviderType.GEMINI ? 'GEMINI' : currentCustomModel?.label}</span></h1>
+              <h1 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">重塑矩阵 <span className="text-[10px] bg-blue-600 px-2 py-0.5 rounded uppercase">{provider === ProviderType.GEMINI ? 'GEMINI' : provider === ProviderType.OLLAMA ? `OLLAMA · ${ollamaConfig.modelName || '未选择'}` : currentCustomModel?.label}</span></h1>
               <p className="text-[11px] text-slate-500">{processing.isProcessing ? `正在处理：${processing.currentChunk}` : '预览模式已开启，大文件仅显示最近生成的片段。'}</p>
             </div>
             <div className="flex items-center gap-3">
