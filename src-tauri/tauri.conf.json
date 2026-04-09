@@ -3,7 +3,8 @@
   "identifier": "com.novastyle.matrix",
   "build": {
     "beforeBuildCommand": "npm run build",
-    "beforeDevCommand": "npm run dev"
+    "beforeDevCommand": "npm run dev",
+    "frontendDist": "../dist"
   },
   "bundle": {
     "active": true,
