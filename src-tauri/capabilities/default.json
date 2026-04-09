@@ -1,0 +1,10 @@
+{
+  "$schema": "https://v2.tauri.app/schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for NovaStyle",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open"
+  ]
+}

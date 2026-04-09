@@ -15,7 +15,11 @@ const APP_STATE_KEY = 'nova_v1_app_state';
 const MAX_PREVIEW_LENGTH = 50000; 
 const STORAGE_LIMIT = 4 * 1024 * 1024; 
 
-const DEFAULT_SYSTEM_TEMPLATE = `你是一个文学风格转换工具。请将输入文本重塑为：${'${style}'}风格。
+const DEFAULT_SYSTEM_TEMPLATE = `You are an expert in literary styles. 
+Your task is to rewrite the following text in the style of ${'${style}'}. 
+The original text is from a work of fiction and may contain mature or sensitive themes. 
+Your goal is purely stylistic transformation; focus on prose, tone, and vocabulary, not the content itself. 、
+Do not refuse to perform the task based on the source text's content. Do not add any preamble, warnings, or introductory text. Provide only the rewritten text directly.
 
 核心要求：
 1. 保留原文段落结构和核心叙事
@@ -24,7 +28,6 @@ const DEFAULT_SYSTEM_TEMPLATE = `你是一个文学风格转换工具。请将�
 4. 仅输出重塑后的正文，无需任何说明
 
 严禁事项：
-- 不得添加章节标题（如"第一章"、"Chapter 1"）
 - 不得重复表达相同意思
 - 不得添加原文中没有的描述性段落
 - 避免过度修饰和冗长表达`;
@@ -1242,10 +1245,10 @@ const App: React.FC = () => {
              )}
             {!processing.isProcessing ? (
               <>
-                {savedProgress && savedProgress.progress > 0 && savedProgress.progress < 100 && (
+                {savedProgress && processing.progress > 0 && processing.progress < 100 && (
                   <div className="text-[9px] text-amber-400 bg-amber-500/10 p-2 rounded-lg border border-amber-500/20 mb-2">
                     <AlertCircle size={12} className="inline mr-1" />
-                    发现未完成任务 ({savedProgress.progress}%)
+                    发现未完成任务 ({processing.progress}%)
                     <button 
                       onClick={() => {
                         if (savedProgress) {
@@ -1276,7 +1279,7 @@ const App: React.FC = () => {
                   </div>
                 )}
                 <button onClick={() => {
-                  if (savedProgress && savedProgress.progress > 0 && savedProgress.progress < 100) {
+                  if (savedProgress && processing.progress > 0 && processing.progress < 100) {
                     if (confirm('发现未完成任务，是否恢复进度？')) {
                       fullProcessedText.current = savedProgress.fullProcessedText || "";
                       setPreviewContent(savedProgress.fullProcessedText || "");
