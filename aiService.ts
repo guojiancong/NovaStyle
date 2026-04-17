@@ -1,5 +1,12 @@
 import { GoogleGenAI } from "@google/genai";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { ModelType, ProviderType, CustomModel, OllamaConfig } from "./types";
+
+// 检测是否在 Tauri 环境中运行
+const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+
+// 统一的 fetch 封装：Tauri 环境用插件（绕过混合内容限制），浏览器环境用原生 fetch
+const safeFetch = isTauri ? tauriFetch : fetch;
 
 /**
  * Service to rewrite text chunks using various AI providers.
@@ -81,7 +88,7 @@ const handleOpenAICompatible = async (
   }
 
   try {
-    const response = await fetch(url, {
+    const response = await safeFetch(url, {
       method: 'POST',
       headers: headers,
       body: JSON.stringify({
@@ -144,7 +151,7 @@ const handleOpenAICompatible = async (
  */
 export const fetchOllamaModels = async (baseUrl: string): Promise<string[]> => {
   const url = `${baseUrl.replace(/\/$/, '')}/api/tags`;
-  const response = await fetch(url);
+  const response = await safeFetch(url);
   if (!response.ok) throw new Error(`无法连接到 Ollama 服务 (${response.status})`);
   const data = await response.json();
   return (data.models || []).map((m: any) => m.name || m.model);
@@ -162,7 +169,7 @@ const handleOllama = async (
   const url = `${config.baseUrl.replace(/\/$/, '')}/v1/chat/completions`;
 
   try {
-    const response = await fetch(url, {
+    const response = await safeFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
