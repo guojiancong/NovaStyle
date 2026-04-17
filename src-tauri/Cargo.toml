@@ -1,6 +1,6 @@
 [package]
 name = "novastyle"
-version = "2.6.0"
+version = "2.7.0"
 description = "A style rewriter for literary works"
 authors = ["NovaStyle Team"]
 edition = "2021"
